@@ -8,7 +8,11 @@ import sys
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("bot.log", encoding="utf-8"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -47,9 +51,6 @@ class SpotiVerseBot:
         self.search_handler = SearchHandler()
         self.download_handler = DownloadHandler(self.bot, self.logger, self.search_handler)
         self.command_handler = CommandHandler(self.bot, self.logger, self.search_handler, self.download_handler)  # Add download_handler
-        
-        # Set up handlers
-        self.setup_handlers()
     
     def validate_credentials(self):
         """Validate that all required credentials are set"""
@@ -68,115 +69,6 @@ class SpotiVerseBot:
             error_msg = "❌ Configuration errors:\n" + "\n".join(f"• {error}" for error in errors)
             logger.error(error_msg)
             raise ValueError(error_msg)
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[
-            logging.FileHandler("bot.log", encoding="utf-8"),
-            logging.StreamHandler()
-        ]
-    )
-
-    def setup_handlers(self):
-        """Set up message and callback handlers"""
-        
-        # Command handlers
-        @self.bot.on_message(filters.command("start"))
-        async def start_handler(client, message: Message):
-            await self.command_handler.start_command(client, message)
-        
-        @self.bot.on_message(filters.command("help"))
-        async def help_handler(client, message: Message):
-            await self.command_handler.help_command(client, message)
-        
-        @self.bot.on_message(filters.command("search"))
-        async def search_handler(client, message: Message):
-            await self.command_handler.search_command(client, message)
-        
-        @self.bot.on_message(filters.command("download"))
-        async def download_handler(client, message: Message):
-            await self.command_handler.download_command(client, message)
-        
-        @self.bot.on_message(filters.command("userinfo"))
-        async def userinfo_handler(client, message: Message):
-            await self.command_handler.userinfo_command(client, message)
-        
-        @self.bot.on_message(filters.command("premium"))
-        async def premium_handler(client, message: Message):
-            await self.command_handler.premium_command(client, message)
-        
-        @self.bot.on_message(filters.command("settings"))
-        async def settings_handler(client, message: Message):
-            await self.command_handler.settings_command(client, message)
-        
-        # Admin commands
-        @self.bot.on_message(filters.command("addpremium"))
-        async def add_premium_handler(client, message: Message):
-            await self.command_handler.add_premium_command(client, message)
-        
-        @self.bot.on_message(filters.command("removepremium"))
-        async def remove_premium_handler(client, message: Message):
-            await self.command_handler.remove_premium_command(client, message)
-        
-        @self.bot.on_message(filters.command("stats"))
-        async def stats_handler(client, message: Message):
-            await self.command_handler.stats_command(client, message)
-        
-        @self.bot.on_message(filters.command("broadcast"))
-        async def broadcast_handler(client, message: Message):
-            await self.command_handler.broadcast_command(client, message)
-        
-        # Callback query handlers with error handling
-        @self.bot.on_callback_query()
-        async def callback_query_handler(client, callback_query: CallbackQuery):
-            try:
-                data = callback_query.data
-                
-                if data.startswith("download_"):
-                    await self.download_handler.handle_download_callback(client, callback_query)
-                
-                elif data.startswith("setting_"):
-                    await self.command_handler.handle_settings_callback(client, callback_query)
-                
-                elif data.startswith("broadcast_"):
-                    await self.command_handler.handle_broadcast_confirmation(client, callback_query)
-                
-                elif data == "premium_info":
-                    await callback_query.message.edit_text(
-                        "💎 **Premium Features**\n\n"
-                        "• Unlimited downloads\n"
-                        "• High quality FLAC format\n"
-                        "• Advanced search options\n"
-                        "• Album downloads\n"
-                        "• No ads\n\n"
-                        "Contact @icecube9680 for premium access!",
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("🔙 Back", callback_data="main_menu")]
-                        ])
-                    )
-                    # Answer the callback query
-                    try:
-                        await callback_query.answer()
-                    except Exception as e:
-                        logger.warning(f"Could not answer callback query: {e}")
-                
-                elif data == "main_menu":
-                    await callback_query.message.delete()
-                    await self.command_handler.start_command(client, callback_query.message)
-                    # Answer the callback query
-                    try:
-                        await callback_query.answer()
-                    except Exception as e:
-                        logger.warning(f"Could not answer callback query: {e}")
-            
-            except Exception as e:
-                logger.error(f"Error in callback query handler: {e}")
-                # Try to answer the callback query to prevent future errors
-                try:
-                    await callback_query.answer("An error occurred")
-                except Exception as inner_e:
-                    logger.warning(f"Could not answer callback query after error: {inner_e}")
     
     async def start(self):
         """Start the bot with proper error handling"""
