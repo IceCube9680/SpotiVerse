@@ -144,6 +144,7 @@ class CommandsBinder:
         app.add_handler(MessageHandler(self._on_removepremium_wrapper, filters.command("removepremium")))
         app.add_handler(MessageHandler(self._on_stats_wrapper, filters.command("stats")))
         app.add_handler(MessageHandler(self._on_broadcast_wrapper, filters.command("broadcast")))
+        app.add_handler(MessageHandler(self._on_logs_wrapper, filters.command("logs")))
 
         # CallbackQuery handler (single)
         app.add_handler(CallbackQueryHandler(self._on_callback_wrapper))
@@ -183,6 +184,9 @@ class CommandsBinder:
 
     async def _on_broadcast_wrapper(self, client: Client, message: Message):
         await self.broadcast_command(client, message)
+
+    async def _on_logs_wrapper(self, client: Client, message: Message):
+        await self.logs_command(client, message)
 
     async def _on_callback_wrapper(self, client: Client, callback_query: CallbackQuery):
         await self.handle_callback(client, callback_query)
@@ -901,14 +905,14 @@ class CommandsBinder:
 # ----------------------
 # Compatibility wrapper + convenience setup
 # ----------------------
-class CommandHandler:
+class CommandHandler(CommandsBinder):
     """
     Compatibility wrapper for code that expects CommandHandler(bot, logger, search_handler, download_handler)
     """
     def __init__(self, bot, logger: BotLogger, search_handler: SearchHandler, download_handler: DownloadHandler):
         # Use CommandsBinder under the hood
         try:
-            CommandsBinder(bot, search_handler, download_handler, logger)
+            super().__init__(bot, search_handler, download_handler, logger)
         except Exception as e:
             logger.error(f"Failed to initialize CommandHandler wrapper: {e}")
             raise

@@ -15,7 +15,7 @@ def _int_env(var_name, default):
         
 class Config:
     # Pyrogram API credentials (REQUIRED)
-    API_ID = int(os.getenv("API_ID", 0))
+    API_ID = _int_env("API_ID", 0)
     API_HASH = os.getenv("API_HASH", "")
 
     # Bot Token (REQUIRED)
@@ -31,19 +31,19 @@ class Config:
     YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 
     # Logging Channels (Optional - set to 0 to disable)
-    LOG_CHANNEL = int(os.getenv("LOG_CHANNEL", 0)) if os.getenv("LOG_CHANNEL") and os.getenv("LOG_CHANNEL").strip() != "" else 0
-    DOWNLOAD_LOG_CHANNEL = int(os.getenv("DOWNLOAD_LOG_CHANNEL", 0)) if os.getenv("DOWNLOAD_LOG_CHANNEL") and os.getenv("DOWNLOAD_LOG_CHANNEL").strip() != "" else 0
+    LOG_CHANNEL = _int_env("LOG_CHANNEL", 0)
+    DOWNLOAD_LOG_CHANNEL = _int_env("DOWNLOAD_LOG_CHANNEL", 0)
 
     # Owner ID
-    OWNER_ID = int(os.getenv("OWNER_ID", 0))
+    OWNER_ID = _int_env("OWNER_ID", 0)
 
     # Download Settings
-    MAX_CONCURRENT_DOWNLOADS = os.getenv("MAX_CONCURRENT_DOWNLOADS", "")
+    MAX_CONCURRENT_DOWNLOADS = _int_env("MAX_CONCURRENT_DOWNLOADS", 3)
     TEMP_DOWNLOAD_DIR = "temp/"
     THUMBNAIL_DIR = "data/thumbnails/"
 
     # Free User Limits
-    FREE_USER_DAILY_LIMIT = os.getenv("FREE_USER_DAILY_LIMIT", "")
+    FREE_USER_DAILY_LIMIT = _int_env("FREE_USER_DAILY_LIMIT", 5)
 
     # Supported Formats
     SUPPORTED_FORMATS = {
