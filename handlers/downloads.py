@@ -7,6 +7,7 @@ from config import Config
 from utils.db import db
 from utils.audio import AudioProcessor
 from utils.logger import BotLogger
+from utils.ytdlp_utils import get_ytdlp_options
 from handlers.search import SearchHandler
 import logging
 import re
@@ -23,13 +24,7 @@ class DownloadHandler:
         self.logger = logger
         self.search_handler = search_handler
         self.audio_processor = AudioProcessor()
-        self.ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': 'temp/%(id)s.%(ext)s',
-            'quiet': True,
-            'no_warnings': True,
-            'noplaylist': True,
-        }
+        self.ydl_opts = get_ytdlp_options({'outtmpl': 'temp/%(id)s.%(ext)s'})
 
         # Ensure directories exist
         os.makedirs("temp", exist_ok=True)
@@ -135,9 +130,16 @@ class DownloadHandler:
                 url = track_id if "http" in track_id else f"https://www.youtube.com/watch?v={track_id}"
                 
                 def _get_yt_info():
-                    with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True}) as ydl:
-                        return ydl.extract_info(url, download=False)
-                
+                    opts = get_ytdlp_options({'quiet': True, 'skip_download': True})
+                    try:
+                        with yt_dlp.YoutubeDL(opts) as ydl:
+                            return ydl.extract_info(url, download=False)
+                    except Exception as err:
+                        logger.warning(f"Primary yt-dlp info extraction failed: {err}. Retrying with fallback player clients...")
+                        opts_fb = get_ytdlp_options({'quiet': True, 'skip_download': True}, player_clients=['mweb', 'android', 'ios', 'web'])
+                        with yt_dlp.YoutubeDL(opts_fb) as ydl:
+                            return ydl.extract_info(url, download=False)
+
                 loop = asyncio.get_event_loop()
                 info = await loop.run_in_executor(None, _get_yt_info)
                 
@@ -168,11 +170,21 @@ class DownloadHandler:
             else:
                 query = f"{track_info['title']} - {track_info['artist']} audio"
                 def _search_yt():
-                    with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True, 'noplaylist': True, 'default_search': 'ytsearch1'}) as ydl:
-                        info = ydl.extract_info(query, download=False)
-                        if 'entries' in info and info['entries']:
-                            return info['entries'][0]['webpage_url']
-                        return None
+                    opts = get_ytdlp_options({'quiet': True, 'skip_download': True, 'noplaylist': True, 'default_search': 'ytsearch1'})
+                    try:
+                        with yt_dlp.YoutubeDL(opts) as ydl:
+                            info = ydl.extract_info(query, download=False)
+                            if info and 'entries' in info and info['entries']:
+                                return info['entries'][0]['webpage_url']
+                            return None
+                    except Exception as err:
+                        logger.warning(f"Primary yt-dlp search failed: {err}. Retrying with fallback player clients...")
+                        opts_fb = get_ytdlp_options({'quiet': True, 'skip_download': True, 'noplaylist': True, 'default_search': 'ytsearch1'}, player_clients=['mweb', 'android', 'ios', 'web'])
+                        with yt_dlp.YoutubeDL(opts_fb) as ydl:
+                            info = ydl.extract_info(query, download=False)
+                            if info and 'entries' in info and info['entries']:
+                                return info['entries'][0]['webpage_url']
+                            return None
                 
                 loop = asyncio.get_event_loop()
                 download_url = await loop.run_in_executor(None, _search_yt)
@@ -181,9 +193,21 @@ class DownloadHandler:
                 return None
             
             def _download():
-                with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
-                    info = ydl.extract_info(download_url, download=True)
-                    return ydl.prepare_filename(info)
+                # Refresh ydl_opts to include any newly placed cookies.txt
+                current_opts = get_ytdlp_options({'outtmpl': 'temp/%(id)s.%(ext)s'})
+                try:
+                    with yt_dlp.YoutubeDL(current_opts) as ydl:
+                        info = ydl.extract_info(download_url, download=True)
+                        return ydl.prepare_filename(info)
+                except Exception as err:
+                    logger.warning(f"Primary yt-dlp download failed: {err}. Retrying with fallback player clients...")
+                    fallback_opts = get_ytdlp_options(
+                        extra_opts={'outtmpl': 'temp/%(id)s.%(ext)s'},
+                        player_clients=['mweb', 'android', 'ios', 'web']
+                    )
+                    with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                        info = ydl.extract_info(download_url, download=True)
+                        return ydl.prepare_filename(info)
             
             loop = asyncio.get_event_loop()
             return await loop.run_in_executor(None, _download)

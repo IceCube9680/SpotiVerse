@@ -2,10 +2,12 @@ import unittest
 from unittest.mock import patch, MagicMock
 import os
 
+from config import Config
 from handlers.search import SearchHandler
 
 class TestSearchHandlerAnonymous(unittest.TestCase):
-    @patch.dict(os.environ, {"SPOTIFY_CLIENT_ID": "", "SPOTIFY_CLIENT_SECRET": ""}, clear=True)
+    @patch.object(Config, "SPOTIFY_CLIENT_ID", "")
+    @patch.object(Config, "SPOTIFY_CLIENT_SECRET", "")
     def test_search_handler_init_without_credentials(self):
         handler = SearchHandler()
         self.assertTrue(handler._use_anonymous_token)

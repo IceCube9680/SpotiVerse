@@ -8,6 +8,7 @@ import asyncio
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from config import Config
 from info import SEARCH_PROVIDERS, DEFAULT_SEARCH_PROVIDER
+from utils.ytdlp_utils import get_ytdlp_options
 import logging
 import yt_dlp
 
@@ -152,29 +153,41 @@ class SearchHandler:
     async def search_youtube(self, query, limit=10):
         """Search YouTube for tracks using yt-dlp (ytsearch)"""
         try:
-            ydl_opts = {
-                'format': 'bestaudio/best',
+            ydl_opts = get_ytdlp_options({
                 'quiet': True,
                 'skip_download': True,
                 'noplaylist': True,
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
-                entries = info.get('entries', []) if info else []
-                tracks = []
-                for e in entries[:limit]:
-                    tracks.append({
-                        'id': e.get('id'),
-                        'title': e.get('title'),
-                        'artist': e.get('uploader') or e.get('uploader_url') or 'Unknown',
-                        'album': 'YouTube',
-                        'year': str(e.get('upload_date', '')[:4]) if e.get('upload_date') else 'Unknown',
-                        'duration': e.get('duration', 0),
-                        'thumbnail': e.get('thumbnail'),
-                        'provider': 'youtube',
-                        'webpage_url': e.get('webpage_url')
-                    })
-                return tracks
+            })
+            info = None
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+            except Exception as err:
+                logger.warning(f"Primary YouTube search failed: {err}. Retrying with fallback player clients...")
+                fallback_opts = get_ytdlp_options(
+                    extra_opts={'quiet': True, 'skip_download': True, 'noplaylist': True},
+                    player_clients=['mweb', 'android', 'ios', 'web']
+                )
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                    info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+
+            entries = info.get('entries', []) if info else []
+            tracks = []
+            for e in entries[:limit]:
+                if not e:
+                    continue
+                tracks.append({
+                    'id': e.get('id'),
+                    'title': e.get('title'),
+                    'artist': e.get('uploader') or e.get('uploader_url') or 'Unknown',
+                    'album': 'YouTube',
+                    'year': str(e.get('upload_date', '')[:4]) if e.get('upload_date') else 'Unknown',
+                    'duration': e.get('duration', 0),
+                    'thumbnail': e.get('thumbnail'),
+                    'provider': 'youtube',
+                    'webpage_url': e.get('webpage_url')
+                })
+            return tracks
         except Exception as e:
             logger.error(f"YouTube search error: {e}")
             return None

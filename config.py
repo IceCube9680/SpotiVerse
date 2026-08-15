@@ -41,6 +41,7 @@ class Config:
     MAX_CONCURRENT_DOWNLOADS = _int_env("MAX_CONCURRENT_DOWNLOADS", 3)
     TEMP_DOWNLOAD_DIR = "temp/"
     THUMBNAIL_DIR = "data/thumbnails/"
+    COOKIES_FILE = os.getenv("COOKIES_FILE", "cookies.txt")
 
     # Free User Limits
     FREE_USER_DAILY_LIMIT = _int_env("FREE_USER_DAILY_LIMIT", 5)
