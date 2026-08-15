@@ -9,7 +9,7 @@ class TestYtdlpUtils(unittest.TestCase):
         self.assertEqual(opts['format'], 'bestaudio/best')
         self.assertTrue(opts['quiet'])
         self.assertIn('youtube', opts['extractor_args'])
-        self.assertEqual(opts['extractor_args']['youtube']['player_client'], ['ios', 'android', 'mweb', 'web'])
+        self.assertEqual(opts['extractor_args']['youtube']['player_client'], ['android', 'tv', 'web'])
 
     def test_get_ytdlp_options_custom_extra(self):
         opts = get_ytdlp_options({'outtmpl': 'test.mp3'}, player_clients=['mweb', 'web'])
