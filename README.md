@@ -98,6 +98,7 @@ API_HASH=""
 
 MONGO_URI=""
 
+# Spotify credentials are optional (uses automatic anonymous web player fallback if left empty)
 SPOTIFY_CLIENT_ID=""
 SPOTIFY_CLIENT_SECRET=""
 

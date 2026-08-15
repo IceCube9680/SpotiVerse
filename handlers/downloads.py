@@ -12,6 +12,8 @@ import logging
 import re
 from spotipy.exceptions import SpotifyException
 import traceback
+import json
+import urllib.request
 
 logger = logging.getLogger(__name__)
 
@@ -52,26 +54,82 @@ class DownloadHandler:
                 logger.error(f"Could not send new message either: {send_e}")
                 return None
 
+    async def fetch_spotify_track_info_via_web(self, track_id):
+        """Fallback to fetch track details using Spotify embed HTML or oEmbed API"""
+        try:
+            embed_url = f"https://open.spotify.com/embed/track/{track_id}"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.get(embed_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        html = await resp.text()
+                        m = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
+                        if m:
+                            data = json.loads(m.group(1))
+                            entity = data.get('props', {}).get('pageProps', {}).get('state', {}).get('data', {}).get('entity', {})
+                            if entity:
+                                title = entity.get('name') or entity.get('title')
+                                artists = [a.get('name') for a in entity.get('artists', []) if isinstance(a, dict) and a.get('name')]
+                                artist_str = ", ".join(artists) if artists else "Unknown Artist"
+                                images = entity.get('visualIdentity', {}).get('image', [])
+                                thumb = images[0].get('url') if images else None
+                                rel_date = entity.get('releaseDate', {}).get('isoString', '')
+                                return {
+                                    "id": track_id,
+                                    "title": title or "Unknown Title",
+                                    "artist": artist_str,
+                                    "album": "Spotify",
+                                    "year": rel_date[:4] if rel_date else "",
+                                    "duration": int(entity.get('duration', 0)) // 1000,
+                                    "thumbnail": thumb,
+                                    "provider": "spotify"
+                                }
+
+            oembed_url = f"https://open.spotify.com/oembed?url=https://open.spotify.com/track/{track_id}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(oembed_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return {
+                            "id": track_id,
+                            "title": data.get("title", "Unknown Track"),
+                            "artist": "Spotify",
+                            "album": "Spotify",
+                            "year": "",
+                            "duration": 0,
+                            "thumbnail": data.get("thumbnail_url"),
+                            "provider": "spotify"
+                        }
+        except Exception as e:
+            logger.error(f"Failed web fallback for Spotify track {track_id}: {e}")
+        return None
+
     async def get_track_info(self, provider, track_id):
         """Get track metadata from provider"""
         try:
             if provider in ["spotify", "sp"]:
-                if not self.search_handler.spotify:
-                    return None
-                
-                loop = asyncio.get_event_loop()
-                track = await loop.run_in_executor(None, lambda: self.search_handler.spotify.track(track_id))
-                
-                return {
-                    "id": track["id"],
-                    "title": track["name"],
-                    "artist": ", ".join([artist["name"] for artist in track["artists"]]),
-                    "album": track["album"]["name"],
-                    "year": track["album"]["release_date"][:4] if track["album"]["release_date"] else "",
-                    "duration": track["duration_ms"] // 1000,
-                    "thumbnail": track["album"]["images"][0]["url"] if track["album"]["images"] else None,
-                    "provider": "spotify"
-                }
+                sp_client = self.search_handler.get_spotify_client()
+                if sp_client:
+                    try:
+                        loop = asyncio.get_event_loop()
+                        track = await loop.run_in_executor(None, lambda: sp_client.track(track_id))
+                        return {
+                            "id": track["id"],
+                            "title": track["name"],
+                            "artist": ", ".join([artist["name"] for artist in track["artists"]]),
+                            "album": track["album"]["name"],
+                            "year": track["album"]["release_date"][:4] if track["album"].get("release_date") else "",
+                            "duration": track["duration_ms"] // 1000,
+                            "thumbnail": track["album"]["images"][0]["url"] if track["album"].get("images") else None,
+                            "provider": "spotify"
+                        }
+                    except Exception as e:
+                        logger.error(f"Error fetching spotify track via spotipy client: {e}")
+
+                # Fallback to web scraping / oembed
+                return await self.fetch_spotify_track_info_via_web(track_id)
             
             elif provider in ["youtube", "yt"]:
                 url = track_id if "http" in track_id else f"https://www.youtube.com/watch?v={track_id}"
@@ -430,72 +488,89 @@ class DownloadHandler:
                         # choose kind using our earlier 'kind' if set, else hint from parse
                         effective_kind = kind if 'kind' in locals() and kind else kind_hint or "album"
 
-                        if effective_kind == "album":
-                            try:
-                                page = self.search_handler.spotify.album_tracks(normalized_id, limit=50, offset=0)
-                            except SpotifyException as e:
-                                logger.error("Spotify album fetch error for id %s: %s", normalized_id, e)
-                                return ids
-                            items = page.get("items", []) if isinstance(page, dict) else []
-                            for it in items:
-                                track_obj = it.get("track", it) if isinstance(it, dict) else it
-                                tid = track_obj.get("id") if isinstance(track_obj, dict) else getattr(track_obj, "id", None)
-                                if tid:
-                                    ids.append(tid)
-                            # pagination
-                            while page.get("next"):
+                        sp_client = self.search_handler.get_spotify_client()
+                        if sp_client:
+                            if effective_kind == "album":
                                 try:
-                                    page = self.search_handler.spotify.next(page)
-                                    items = page.get("items", [])
+                                    page = sp_client.album_tracks(normalized_id, limit=50, offset=0)
+                                    items = page.get("items", []) if isinstance(page, dict) else []
                                     for it in items:
                                         track_obj = it.get("track", it) if isinstance(it, dict) else it
                                         tid = track_obj.get("id") if isinstance(track_obj, dict) else getattr(track_obj, "id", None)
                                         if tid:
                                             ids.append(tid)
+                                    # pagination
+                                    while page.get("next"):
+                                        try:
+                                            page = sp_client.next(page)
+                                            items = page.get("items", [])
+                                            for it in items:
+                                                track_obj = it.get("track", it) if isinstance(it, dict) else it
+                                                tid = track_obj.get("id") if isinstance(track_obj, dict) else getattr(track_obj, "id", None)
+                                                if tid:
+                                                    ids.append(tid)
+                                        except SpotifyException as e:
+                                            logger.warning("Spotify paging stopped for album %s: %s", normalized_id, e)
+                                            break
                                 except SpotifyException as e:
-                                    logger.warning("Spotify paging stopped for album %s: %s", normalized_id, e)
-                                    break
+                                    logger.error("Spotify album fetch error for id %s: %s", normalized_id, e)
 
-                        elif effective_kind == "playlist":
-                            try:
-                                page = self.search_handler.spotify.playlist_items(normalized_id, limit=100, offset=0)
-                            except SpotifyException as e:
-                                logger.error("Spotify playlist fetch error for id %s: %s", normalized_id, e)
-                                return ids
-                            items = page.get("items", []) if isinstance(page, dict) else []
-                            for it in items:
-                                track_obj = it.get("track", it) if isinstance(it, dict) else it
-                                tid = track_obj.get("id") if isinstance(track_obj, dict) else getattr(track_obj, "id", None)
-                                if tid:
-                                    ids.append(tid)
-                            while page.get("next"):
+                            elif effective_kind == "playlist":
                                 try:
-                                    page = self.search_handler.spotify.next(page)
-                                    items = page.get("items", [])
+                                    page = sp_client.playlist_items(normalized_id, limit=100, offset=0)
+                                    items = page.get("items", []) if isinstance(page, dict) else []
                                     for it in items:
                                         track_obj = it.get("track", it) if isinstance(it, dict) else it
                                         tid = track_obj.get("id") if isinstance(track_obj, dict) else getattr(track_obj, "id", None)
                                         if tid:
                                             ids.append(tid)
+                                    while page.get("next"):
+                                        try:
+                                            page = sp_client.next(page)
+                                            items = page.get("items", [])
+                                            for it in items:
+                                                track_obj = it.get("track", it) if isinstance(it, dict) else it
+                                                tid = track_obj.get("id") if isinstance(track_obj, dict) else getattr(track_obj, "id", None)
+                                                if tid:
+                                                    ids.append(tid)
+                                        except SpotifyException as e:
+                                            logger.warning("Spotify paging stopped for playlist %s: %s", normalized_id, e)
+                                            break
                                 except SpotifyException as e:
-                                    logger.warning("Spotify paging stopped for playlist %s: %s", normalized_id, e)
-                                    break
+                                    logger.error("Spotify playlist fetch error for id %s: %s", normalized_id, e)
 
-                        elif effective_kind == "artist":
+                            elif effective_kind == "artist":
+                                try:
+                                    top = sp_client.artist_top_tracks(normalized_id, country='US')
+                                    items = top.get("tracks", []) if isinstance(top, dict) else []
+                                    for tr in items:
+                                        tid = tr.get("id") if isinstance(tr, dict) else getattr(tr, "id", None)
+                                        if tid:
+                                            ids.append(tid)
+                                except SpotifyException as e:
+                                    logger.error("Spotify artist top tracks error for id %s: %s", normalized_id, e)
+
+                        # Embed scraping fallback if spotipy returned no tracks
+                        if not ids:
                             try:
-                                top = self.search_handler.spotify.artist_top_tracks(normalized_id, country='US')
-                            except SpotifyException as e:
-                                logger.error("Spotify artist top tracks error for id %s: %s", normalized_id, e)
-                                return ids
-                            items = top.get("tracks", []) if isinstance(top, dict) else []
-                            for tr in items:
-                                tid = tr.get("id") if isinstance(tr, dict) else getattr(tr, "id", None)
-                                if tid:
-                                    ids.append(tid)
-
-                        else:
-                            logger.error("Unknown spotify kind for id %s (hint: %s).", normalized_id, kind_hint)
-                            return ids
+                                embed_url = f"https://open.spotify.com/embed/{effective_kind}/{normalized_id}"
+                                headers = {
+                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                                }
+                                req = urllib.request.Request(embed_url, headers=headers)
+                                with urllib.request.urlopen(req, timeout=10) as resp:
+                                    html = resp.read().decode('utf-8')
+                                    m = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
+                                    if m:
+                                        data = json.loads(m.group(1))
+                                        entity = data.get('props', {}).get('pageProps', {}).get('state', {}).get('data', {}).get('entity', {})
+                                        track_list = entity.get('trackList', [])
+                                        for t in track_list:
+                                            tid = t.get('id') or (t.get('uri', '').split(':')[-1] if 'uri' in t else None)
+                                            if tid:
+                                                ids.append(tid)
+                            except Exception as embed_e:
+                                logger.error("Embed fallback failed for %s %s: %s", effective_kind, normalized_id, embed_e)
 
                     except Exception as e:
                         logger.error("Spotify paging/error fetching ids: %s", e)

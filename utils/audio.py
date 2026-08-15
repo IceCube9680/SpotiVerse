@@ -5,8 +5,8 @@ from PIL import Image, ImageDraw, ImageFont
 import requests
 from io import BytesIO
 from mutagen import File
-from mutagen.flac import FLAC
-from mutagen.id3 import ID3, TIT2, TPE1, TALB, TYER, TCON, APIC
+from mutagen.flac import FLAC, Picture
+from mutagen.id3 import ID3, TIT2, TPE1, TALB, TYER, TCON, APIC, ID3NoHeaderError
 import logging
 import platform
 import stat
@@ -228,7 +228,12 @@ class AudioProcessor:
         """Add metadata to audio file"""
         try:
             if audio_path.endswith('.mp3'):
-                audio = ID3(audio_path)
+                try:
+                    audio = ID3(audio_path)
+                except ID3NoHeaderError:
+                    audio = ID3()
+                    audio.save(audio_path)
+                    audio = ID3(audio_path)
                 
                 # Add text metadata
                 audio["TIT2"] = TIT2(encoding=3, text=metadata.get("title", "Unknown Title"))
@@ -269,12 +274,12 @@ class AudioProcessor:
                     try:
                         response = requests.get(thumbnail_url)
                         img_data = response.content
-                        audio.add_picture(
-                            type=3,  # 3 is for cover image
-                            mime='image/jpeg',
-                            desc='Cover',
-                            data=img_data
-                        )
+                        image = Picture()
+                        image.type = 3  # 3 is for cover image
+                        image.mime = 'image/jpeg'
+                        image.desc = 'Cover'
+                        image.data = img_data
+                        audio.add_picture(image)
                     except Exception as e:
                         logger.error(f"Failed to add thumbnail: {e}")
                 
@@ -322,8 +327,11 @@ class AudioProcessor:
             draw.text((title_x, title_y), title, font=title_font, fill=(255, 255, 255))
             draw.text((artist_x, artist_y), artist, font=artist_font, fill=(236, 240, 241))
             
-            # Save thumbnail
-            thumbnail_path = f"data/thumbnails/{title}_{artist}.jpg"
+            # Save thumbnail (sanitize title and artist for safe filename)
+            import re
+            safe_title = re.sub(r'[^\w\s-]', '', title).strip() or "title"
+            safe_artist = re.sub(r'[^\w\s-]', '', artist).strip() or "artist"
+            thumbnail_path = f"data/thumbnails/{safe_title}_{safe_artist}.jpg"
             os.makedirs(os.path.dirname(thumbnail_path), exist_ok=True)
             img.save(thumbnail_path)
             
