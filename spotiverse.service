@@ -1,0 +1,19 @@
+[Unit]
+Description=SpotiVerse Telegram Music Downloader Bot
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=icecube
+WorkingDirectory=/home/icecube/ASUS/SpotiVerse
+ExecStart=/usr/bin/python3 /home/icecube/ASUS/SpotiVerse/bot.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+# Resource & Security Limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
