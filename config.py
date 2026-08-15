@@ -22,7 +22,7 @@ class Config:
     BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
     # MongoDB Configuration
-    MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://ice:mlovely9680@cluster0.y9czlat.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+    MONGO_URI = os.getenv("MONGO_URI", "")
     DB_NAME = "spotiverse_bot"
 
     # API Keys (Optional - Spotify keys default to anonymous web player fallback if omitted)
