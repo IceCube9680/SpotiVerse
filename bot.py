@@ -33,6 +33,13 @@ except ImportError as e:
     logger.error(f"❌ Could not import required modules: {e}")
     logger.error("Make sure all handler files exist in the handlers directory")
     sys.exit(1)
+try:
+    import uvloop
+    uvloop.install()
+    logger.info("⚡ uvloop event loop enabled for maximum async performance")
+except Exception:
+    pass
+
 class SpotiVerseBot:
     def __init__(self):
         # Validate required credentials
@@ -42,7 +49,8 @@ class SpotiVerseBot:
             "spotiverse_bot",
             api_id=Config.API_ID,
             api_hash=Config.API_HASH,
-            bot_token=Config.BOT_TOKEN
+            bot_token=Config.BOT_TOKEN,
+            max_concurrent_transmissions=10
         )
         
         # Initialize utilities
