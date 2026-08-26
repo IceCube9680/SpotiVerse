@@ -1,6 +1,8 @@
 import os
 import asyncio
 from pyrogram import Client, filters
+import pyrogram.utils
+pyrogram.utils.MIN_CHANNEL_ID = -100999999999999
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 import logging
 import sys
@@ -29,6 +31,7 @@ try:
     from handlers.search import SearchHandler
     from handlers.downloads import DownloadHandler
     from utils.logger import BotLogger
+    from utils.db import db
 except ImportError as e:
     logger.error(f"❌ Could not import required modules: {e}")
     logger.error("Make sure all handler files exist in the handlers directory")
@@ -116,6 +119,10 @@ class SpotiVerseBot:
             raise
         finally:
             # Ensure proper cleanup
+            try:
+                db.close()
+            except Exception:
+                pass
             if self.bot.is_connected:
                 await self.bot.stop()
                 logger.info("Bot stopped.")

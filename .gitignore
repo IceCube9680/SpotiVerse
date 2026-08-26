@@ -22,3 +22,10 @@ cookies.txt
 venv/
 ENV/
 env/
+
+# Service & Deployment scripts
+spotiverse.service
+spotiverse.sh
+
+# Tests
+tests/

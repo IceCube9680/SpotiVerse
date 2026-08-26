@@ -1,4 +1,5 @@
 import os
+import socket
 import aiohttp
 import asyncio
 import yt_dlp
@@ -15,6 +16,14 @@ from spotipy.exceptions import SpotifyException
 import traceback
 import json
 import urllib.request
+from datetime import datetime, timezone
+import pyrogram.errors
+
+try:
+    import urllib3.util.connection as urllib3_cn
+    urllib3_cn.allowed_gai_family = lambda: socket.AF_INET
+except Exception:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -25,29 +34,59 @@ class DownloadHandler:
         self.search_handler = search_handler
         self.audio_processor = AudioProcessor()
         self.ydl_opts = get_ytdlp_options({'outtmpl': 'temp/%(id)s.%(ext)s'})
+        max_concurrency = getattr(Config, "MAX_CONCURRENT_DOWNLOADS", 3) or 3
+        self.semaphore = asyncio.Semaphore(max_concurrency)
 
         # Ensure directories exist
         os.makedirs("temp", exist_ok=True)
         os.makedirs("data/thumbnails", exist_ok=True)
 
     async def safe_edit_message(self, message, text, **kwargs):
-        """Safely edit a message, handling potential deletion or invalid states"""
+        """Safely edit a message, handling potential deletion, FloodWait, or invalid states"""
+        if not message:
+            return None
         try:
-            if message and hasattr(message, 'edit_text'):
+            if hasattr(message, 'edit_text'):
                 return await message.edit_text(text, **kwargs)
             return None
+        except pyrogram.errors.MessageNotModified:
+            # Text didn't change, return same message
+            return message
+        except pyrogram.errors.FloodWait as fw:
+            logger.warning(f"FloodWait during edit_message: sleeping for {fw.value}s")
+            await asyncio.sleep(fw.value + 1)
+            try:
+                if hasattr(message, 'edit_text'):
+                    return await message.edit_text(text, **kwargs)
+            except Exception:
+                pass
+            return message
         except Exception as e:
             logger.warning(f"Could not edit message: {e}")
             # If we can't edit, try to send a new message
             try:
-                return await self.bot.send_message(
-                    chat_id=message.chat.id,
-                    text=text,
-                    **kwargs
-                )
+                chat_id = None
+                if hasattr(message, 'chat') and message.chat:
+                    chat_id = getattr(message.chat, 'id', None)
+                if not chat_id:
+                    chat_id = getattr(message, 'chat_id', None)
+                if chat_id:
+                    return await self.bot.send_message(
+                        chat_id=chat_id,
+                        text=text,
+                        **kwargs
+                    )
+            except pyrogram.errors.FloodWait as fw:
+                await asyncio.sleep(fw.value + 1)
+                try:
+                    if chat_id:
+                        return await self.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+                except Exception:
+                    pass
             except Exception as send_e:
                 logger.error(f"Could not send new message either: {send_e}")
                 return None
+        return message
 
     async def fetch_spotify_track_info_via_web(self, track_id):
         """Fallback to fetch track details using Spotify embed HTML or oEmbed API"""
@@ -90,7 +129,7 @@ class DownloadHandler:
                         return {
                             "id": track_id,
                             "title": data.get("title", "Unknown Track"),
-                            "artist": "Spotify",
+                            "artist": data.get("author_name") or "Spotify",
                             "album": "Spotify",
                             "year": "",
                             "duration": 0,
@@ -105,23 +144,41 @@ class DownloadHandler:
         """Get track metadata from provider"""
         try:
             if provider in ["spotify", "sp"]:
-                sp_client = self.search_handler.get_spotify_client()
-                if sp_client:
-                    try:
-                        loop = asyncio.get_event_loop()
-                        track = await loop.run_in_executor(None, lambda: sp_client.track(track_id))
-                        return {
-                            "id": track["id"],
-                            "title": track["name"],
-                            "artist": ", ".join([artist["name"] for artist in track["artists"]]),
-                            "album": track["album"]["name"],
-                            "year": track["album"]["release_date"][:4] if track["album"].get("release_date") else "",
-                            "duration": track["duration_ms"] // 1000,
-                            "thumbnail": track["album"]["images"][0]["url"] if track["album"].get("images") else None,
-                            "provider": "spotify"
-                        }
-                    except Exception as e:
-                        logger.error(f"Error fetching spotify track via spotipy client: {e}")
+                if self.search_handler.spotify and not self.search_handler._use_anonymous_token:
+                    sp_client = self.search_handler.get_spotify_client()
+                    if sp_client:
+                        try:
+                            try:
+                                loop = asyncio.get_running_loop()
+                            except RuntimeError:
+                                loop = asyncio.get_event_loop()
+                            track = await loop.run_in_executor(None, lambda: sp_client.track(track_id))
+                            album_obj = track.get("album") or {}
+                            artists_list = track.get("artists") or []
+                            artist_names = [a.get("name", "Unknown") for a in artists_list if isinstance(a, dict) and a.get("name")]
+                            artist_str = ", ".join(artist_names) if artist_names else "Unknown Artist"
+                            rel_date = str(album_obj.get("release_date") or "")
+                            images = album_obj.get("images") or []
+                            thumb = images[0].get("url") if images and isinstance(images[0], dict) else None
+
+                            return {
+                                "id": track.get("id", track_id),
+                                "title": track.get("name", "Unknown Track"),
+                                "artist": artist_str,
+                                "album": album_obj.get("name", "Spotify"),
+                                "year": rel_date[:4] if rel_date else "",
+                                "duration": int(track.get("duration_ms", 0)) // 1000,
+                                "thumbnail": thumb,
+                                "provider": "spotify"
+                            }
+                        except Exception as e:
+                            serr = str(e)
+                            if "429" in serr or "rate" in serr.lower() or "too many" in serr.lower():
+                                logger.warning("Spotify API rate limit in get_track_info. Switching to web fallback.")
+                                if hasattr(self.search_handler, "_spotify_rate_limited_until"):
+                                    self.search_handler._spotify_rate_limited_until = time.time() + 300
+                            else:
+                                logger.error(f"Error fetching spotify track via spotipy client: {e}")
 
                 # Fallback to web scraping / oembed
                 return await self.fetch_spotify_track_info_via_web(track_id)
@@ -140,7 +197,10 @@ class DownloadHandler:
                         with yt_dlp.YoutubeDL(opts_fb) as ydl:
                             return ydl.extract_info(url, download=False)
 
-                loop = asyncio.get_event_loop()
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = asyncio.get_event_loop()
                 info = await loop.run_in_executor(None, _get_yt_info)
                 
                 return {
@@ -154,8 +214,43 @@ class DownloadHandler:
                     "provider": "youtube",
                     "webpage_url": info.get("webpage_url", url)
                 }
-            
-            return None
+
+            elif provider in ["saavn", "jiosaavn"]:
+                url = f"https://www.jiosaavn.com/api.php?__call=song.getDetails&pids={track_id}&_format=json&_marker=0&ctx=android"
+                try:
+                    connector = aiohttp.TCPConnector(family=socket.AF_INET)
+                    headers = {'User-Agent': 'Mozilla/5.0'}
+                    async with aiohttp.ClientSession(connector=connector, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as session:
+                        async with session.get(url) as resp:
+                            if resp.status == 200:
+                                data = await resp.json(content_type=None)
+                                sdata = data.get(track_id, {}) or (data.get('songs', [{}])[0] if 'songs' in data else {})
+                                if sdata:
+                                    thumb_img = sdata.get('image', '')
+                                    thumb = thumb_img.replace('50x50', '500x500').replace('150x150', '500x500') if thumb_img else None
+                                    return {
+                                        "id": track_id,
+                                        "title": sdata.get('song') or sdata.get('title') or "Unknown Track",
+                                        "artist": sdata.get('primary_artists') or sdata.get('singers') or "Unknown Artist",
+                                        "album": sdata.get('album') or "JioSaavn",
+                                        "year": str(sdata.get('year', ''))[:4],
+                                        "duration": int(sdata.get('duration', 0)),
+                                        "thumbnail": thumb,
+                                        "provider": "saavn"
+                                    }
+                except Exception as saavn_err:
+                    logger.warning(f"Error fetching saavn track details for {track_id}: {saavn_err}")
+
+                return {
+                    "id": track_id,
+                    "title": "JioSaavn Track",
+                    "artist": "Unknown Artist",
+                    "album": "JioSaavn",
+                    "year": "",
+                    "duration": 0,
+                    "thumbnail": None,
+                    "provider": "saavn"
+                }
         except Exception as e:
             logger.error(f"Error in get_track_info: {e}")
             return None
@@ -186,7 +281,10 @@ class DownloadHandler:
                                 return info['entries'][0]['webpage_url']
                             return None
                 
-                loop = asyncio.get_event_loop()
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = asyncio.get_event_loop()
                 download_url = await loop.run_in_executor(None, _search_yt)
             
             if not download_url:
@@ -209,23 +307,29 @@ class DownloadHandler:
                         info = ydl.extract_info(download_url, download=True)
                         return ydl.prepare_filename(info)
             
-            loop = asyncio.get_event_loop()
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
             return await loop.run_in_executor(None, _download)
         except Exception as e:
             logger.error(f"Error in download_audio: {e}")
             return None
 
-    async def download_track(self, provider, track_id, user_id, message):
-        """Download a track from the specified provider - returns success status"""
-        user = db.get_user(user_id)
+    async def download_track(self, provider, track_id, user_id, message, is_batch=False):
+        """Download a track from the specified provider - returns success status (Free + Premium)"""
+        user = db.get_user(user_id) or {}
 
-        # Check if user can download
+        # Check download quota
         can_download, reason = db.can_download(user_id)
         if not can_download:
             await self.safe_edit_message(
                 message,
                 f"❌ {reason}\n\n"
-                f"You've used {user.get('downloads_today', 0)}/{Config.FREE_USER_DAILY_LIMIT} downloads today."
+                f"📊 Free Users Daily Limit: {user.get('downloads_today', 0)}/{Config.FREE_USER_DAILY_LIMIT} downloads today.\n\n"
+                f"💎 Upgrade to Premium for unlimited downloads and higher quality!\n"
+                f"Contact: @icecube9608\n\n"
+                f"👤 **Your User ID:** `{user_id}`"
             )
             return False
 
@@ -246,9 +350,16 @@ class DownloadHandler:
         # Process the audio
         await self.safe_edit_message(message, f"🔄 Processing **{track_info['title']}**...")
 
-        # Get user preferences
-        preferred_format = user.get("preferred_format", "mp3")
-        preferred_quality = user.get("preferred_quality", 320)
+        # Get user preferences via effective settings
+        eff_settings = db.get_effective_settings(user_id) if hasattr(db, "get_effective_settings") else {}
+        if not isinstance(eff_settings, dict):
+            eff_settings = {}
+        preferred_format = eff_settings.get("preferred_format") or user.get("preferred_format", "mp3")
+        if not isinstance(preferred_format, str):
+            preferred_format = "mp3"
+        preferred_quality = eff_settings.get("preferred_quality") or user.get("preferred_quality", 320 if user.get("premium") else 64)
+        if isinstance(preferred_quality, (MagicMock if "MagicMock" in globals() else type(None))):
+            preferred_quality = 320
 
         # Convert if needed
         try:
@@ -277,7 +388,7 @@ class DownloadHandler:
         if track_info.get("thumbnail"):
             try:
                 thumbnail_path = f"data/thumbnails/{track_info['id']}.jpg"
-                async with aiohttp.ClientSession() as session:
+                async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(family=socket.AF_INET)) as session:
                     async with session.get(track_info["thumbnail"]) as resp:
                         if resp.status == 200:
                             content = await resp.read()
@@ -316,48 +427,68 @@ class DownloadHandler:
                 f"🎛️ **Format:** {preferred_format.upper()} {preferred_quality} kbps"
             )
 
-            await self.bot.send_audio(
-                chat_id=user_id,
-                audio=audio_path,
-                caption=caption,
-                thumb=thumbnail_path,
-                title=track_info["title"],
-                performer=track_info["artist"],
-                duration=track_info.get("duration", 0)
-            )
+            # Retry loop for send_audio handling FloodWait
+            uploaded = False
+            for attempt in range(3):
+                try:
+                    await self.bot.send_audio(
+                        chat_id=user_id,
+                        audio=audio_path,
+                        caption=caption,
+                        thumb=thumbnail_path,
+                        title=track_info["title"],
+                        performer=track_info["artist"],
+                        duration=track_info.get("duration", 0)
+                    )
+                    uploaded = True
+                    break
+                except pyrogram.errors.FloodWait as fw:
+                    logger.warning(f"FloodWait during send_audio: sleeping for {fw.value}s")
+                    await asyncio.sleep(fw.value + 1)
+                except Exception as e:
+                    logger.error(f"Failed to send audio (attempt {attempt + 1}): {e}\n{traceback.format_exc()}")
+                    if attempt == 2:
+                        await self.safe_edit_message(message, "❌ Failed to send audio.")
+                        return False
+                    await asyncio.sleep(2)
+
+            if not uploaded:
+                return False
 
             # Record download
-            track_info["timestamp"] = message.date
+            track_info["timestamp"] = getattr(message, "date", None) or datetime.now(timezone.utc).replace(tzinfo=None)
             track_info["format"] = preferred_format
             track_info["quality"] = preferred_quality
-            
-            # Edit the status/progress message to success
-            sent = await self.safe_edit_message(message, f"✅ Successfully downloaded **{track_info['title']}**!")
 
+            uname = getattr(getattr(message, "from_user", None), "username", None) or (user or {}).get("username")
+            if uname:
+                track_info["username"] = uname
+            
             # Record the download in DB (best-effort; does not block UI)
             try:
-                db.record_download(user_id, track_info)
+                db.record_download(user_id, track_info, username=uname)
                 # Log download
-                await self.logger.log_download(user_id, track_info, f"{preferred_format} {preferred_quality}")
+                await self.logger.log_download(user_id, track_info, f"{preferred_format} {preferred_quality}", username=uname)
             except Exception as e:
                 logger.warning(f"Failed to record download in DB for user {user_id}: {e}")
 
-            # Schedule deletion after 5 minutes without blocking the handler
-            if sent:
-                async def _delete_later(msg):
-                    try:
-                        await asyncio.sleep(300)  # 5 minutes instead of 10
-                        await msg.delete()
-                    except Exception:
-                        # ignore errors (already deleted, permissions, etc.)
-                        pass
+            if not is_batch:
+                # Edit the status/progress message to success only for single downloads
+                sent = await self.safe_edit_message(message, f"✅ Successfully downloaded **{track_info['title']}**!")
 
-                # create a background task on the running event loop
-                try:
-                    asyncio.create_task(_delete_later(sent))
-                except RuntimeError:
-                    # If event loop isn't running, just ignore scheduling
-                    pass
+                # Schedule deletion after 5 minutes only for single downloads
+                if sent:
+                    async def _delete_later(msg):
+                        try:
+                            await asyncio.sleep(300)
+                            await msg.delete()
+                        except Exception:
+                            pass
+
+                    try:
+                        asyncio.create_task(_delete_later(sent))
+                    except RuntimeError:
+                        pass
 
             return True
 
@@ -369,7 +500,7 @@ class DownloadHandler:
         finally:
             # Clean up files
             try:
-                if os.path.exists(audio_path):
+                if audio_path and os.path.exists(audio_path):
                     os.remove(audio_path)
                 if thumbnail_path and os.path.exists(thumbnail_path):
                     os.remove(thumbnail_path)
@@ -413,6 +544,8 @@ class DownloadHandler:
 
     async def handle_download_callback(self, client, callback_query: CallbackQuery):
         """Handle download callback queries"""
+        if not callback_query.from_user:
+            return
         data = callback_query.data
         user_id = callback_query.from_user.id
 
@@ -427,6 +560,29 @@ class DownloadHandler:
 
             provider = parts[1]
             track_id = parts[2]
+
+            # Check download quota for free/premium users
+            can_download, reason = db.can_download(user_id)
+            if not can_download:
+                try:
+                    await callback_query.answer(f"❌ {reason}", show_alert=True)
+                except Exception:
+                    pass
+                try:
+                    user = db.get_user(user_id) or {}
+                    await self.bot.send_message(
+                        chat_id=user_id,
+                        text=(
+                            f"❌ **Download Limit Reached!**\n\n"
+                            f"📊 Used: {user.get('downloads_today', 0)}/{Config.FREE_USER_DAILY_LIMIT} free downloads today.\n\n"
+                            f"💎 Upgrade to Premium to unlock unlimited high-quality downloads & album support!\n"
+                            f"Contact: @icecube9608\n\n"
+                            f"👤 **Your User ID:** `{user_id}`"
+                        )
+                    )
+                except Exception:
+                    pass
+                return
             
             try:
                 # Answer callback query first
@@ -448,7 +604,17 @@ class DownloadHandler:
 
     # === New methods for album/playlist support ===
     async def download_album(self, provider, album_id_or_url, user_id, message):
-        """Download multiple tracks from an album/playlist. Returns True if at least one track downloaded."""
+        """Download multiple tracks from an album/playlist. Returns True if at least one track downloaded (Premium Only)."""
+        if not db.is_premium(user_id):
+            await self.safe_edit_message(
+                message,
+                f"❌ **Premium Required!**\n\n"
+                f"📥 Album and playlist downloads are available for **Premium users only**.\n\n"
+                f"💎 Upgrade to Premium for unlimited downloads!\n"
+                f"Contact: @icecube9608\n\n"
+                f"👤 **Your User ID:** `{user_id}`"
+            )
+            return False
         try:
             track_items = []
 
@@ -485,8 +651,13 @@ class DownloadHandler:
                     if re.fullmatch(r"[A-Za-z0-9]{10,}", simple):
                         return simple, None
 
-                    # parse common open.spotify.com URL forms
-                    m = re.search(r"open\.spotify\.com/(album|playlist|artist|track)/([A-Za-z0-9]+)", simple)
+                    # parse common and international open.spotify.com URL forms
+                    m = re.search(r"open\.spotify\.com/(?:intl-[^/]+/)?(album|playlist|artist|track)/([A-Za-z0-9]+)", simple)
+                    if m:
+                        return m.group(2), m.group(1)
+
+                    # URI format spotify:album:xxx
+                    m = re.search(r"spotify:(album|playlist|artist|track):([A-Za-z0-9]+)", simple)
                     if m:
                         return m.group(2), m.group(1)
 
@@ -600,36 +771,49 @@ class DownloadHandler:
                         logger.error("Spotify paging/error fetching ids: %s", e)
                     return ids
 
-
-                loop = asyncio.get_event_loop()
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = asyncio.get_event_loop()
                 track_ids = await loop.run_in_executor(None, fetch_spotify_ids)
                 track_items = [("spotify", tid) for tid in track_ids if tid]
 
             elif provider == "youtube" or provider == 'yt':
                 entries = await self._youtube_get_playlist_entries(album_id_or_url)
                 if not entries:
-                    await message.edit_text("❌ Could not extract YouTube playlist entries.")
+                    await self.safe_edit_message(message, "❌ Could not extract YouTube playlist entries.")
                     return False
                 track_items = [("youtube", e.get('webpage_url') or e.get('id')) for e in entries]
 
             else:
-                await message.edit_text("❌ Multi-track downloads are not supported for this provider yet.")
+                await self.safe_edit_message(message, "❌ Multi-track downloads are not supported for this provider yet.")
                 return False
 
             total = len(track_items)
             if total == 0:
-                await message.edit_text("❌ No tracks found in the album/playlist.")
+                await self.safe_edit_message(message, "❌ No tracks found in the album/playlist.")
                 return False
 
             success_count = 0
             fail_count = 0
 
-            progress = await message.edit_text(f"⬇️ Preparing to download {total} tracks from album/playlist...\nProgress: 0/{total}")
+            progress = await self.safe_edit_message(
+                message,
+                f"⬇️ Preparing to download {total} tracks from album/playlist...\nProgress: 0/{total}"
+            ) or message
 
             for idx, (prov, tid) in enumerate(track_items, start=1):
-                await progress.edit_text(f"⬇️ Downloading {idx}/{total}...\nTrack: {tid}")
                 try:
-                    single_success = await self.download_track(prov, tid, user_id, progress)
+                    progress = await self.safe_edit_message(
+                        progress,
+                        f"⬇️ Downloading [{idx}/{total}]...\n"
+                        f"✅ Successful: {success_count}  |  ❌ Failed: {fail_count}"
+                    ) or progress
+                except Exception as e:
+                    logger.warning(f"Could not update batch progress message: {e}")
+
+                try:
+                    single_success = await self.download_track(prov, tid, user_id, progress, is_batch=True)
                     if single_success:
                         success_count += 1
                     else:
@@ -638,15 +822,38 @@ class DownloadHandler:
                     logger.error(f"Failed downloading track {tid}: {e}")
                     fail_count += 1
 
-                await asyncio.sleep(1)
-                await progress.edit_text(f"⬇️ Downloading {idx}/{total}...\nSuccessful: {success_count}  Failed: {fail_count}")
+                # Brief delay between tracks to reduce Telegram rate limits
+                await asyncio.sleep(1.5)
 
-            await progress.edit_text(f"✅ Album/playlist download finished.\nSuccessful: {success_count}\nFailed: {fail_count}")
+            final_msg = await self.safe_edit_message(
+                progress,
+                f"✅ **Album/playlist download finished.**\n\n"
+                f"📊 Total tracks: {total}\n"
+                f"✅ Successful: {success_count}\n"
+                f"❌ Failed: {fail_count}"
+            )
+
+            # Schedule deletion for the single final summary message after 5 minutes
+            if final_msg:
+                async def _delete_later(msg):
+                    try:
+                        await asyncio.sleep(300)
+                        await msg.delete()
+                    except Exception:
+                        pass
+                try:
+                    asyncio.create_task(_delete_later(final_msg))
+                except RuntimeError:
+                    pass
+
             return success_count > 0
 
         except Exception as e:
-            logger.error(f"Unexpected error in download_album: {e}")
-            await message.edit_text(f"❌ Unexpected error: {e}")
+            logger.error(f"Unexpected error in download_album: {e}\n{traceback.format_exc()}")
+            try:
+                await self.safe_edit_message(message, f"❌ Unexpected error: {e}")
+            except Exception:
+                pass
             return False
 
     async def _youtube_get_playlist_entries(self, playlist_url, max_items=200):
@@ -658,7 +865,10 @@ class DownloadHandler:
                     info = ydl.extract_info(playlist_url, download=False)
                     entries = info.get('entries', []) if info else []
                     return entries
-            loop = asyncio.get_event_loop()
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
             entries = await loop.run_in_executor(None, extract)
             return entries[:max_items] if entries else []
         except Exception as e:

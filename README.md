@@ -35,10 +35,8 @@
   - [Admin & Owner Commands](#admin--owner-commands)
   - [Direct Chat & Inline Features](#direct-chat--inline-features)
 - [📦 Deployment Options](#-deployment-options)
-  - [1. CLI Management Script (`spotiverse.sh`)](#1-cli-management-script-spotiversesh)
-  - [2. Systemd Service (Linux Daemon)](#2-systemd-service-linux-daemon)
-  - [3. Docker Container](#3-docker-container)
-- [🧪 Running Tests](#-running-tests)
+  - [1. Local Deployment](#1-local-deployment)
+  - [2. Docker Container](#2-docker-container)
 - [🔧 Troubleshooting & FAQ](#-troubleshooting--faq)
 - [⚖️ Legal & Disclaimer](#️-legal--disclaimer)
 - [📄 License](#-license)
@@ -79,8 +77,6 @@ SpotiVerse/
 ├── bot.py                  # Bot entry point, lifecycle management & event loop
 ├── config.py               # Centralized configuration & environment loader
 ├── info.py                 # Bot constants, premium plans & default settings
-├── spotiverse.sh           # CLI service controller (start, stop, restart, logs)
-├── spotiverse.service      # Systemd service unit template for Linux servers
 ├── Dockerfile              # Containerization definition with FFmpeg pre-installed
 ├── requirements.txt        # Python dependency manifest
 ├── handlers/
@@ -92,14 +88,6 @@ SpotiVerse/
 │   ├── db.py               # MongoDB database layer with local fallback & auto-sync
 │   ├── logger.py           # Telegram channel logging and audit utilities
 │   └── ytdlp_utils.py      # yt-dlp configuration, cookies loader & network tuners
-├── tests/                  # Automated unit test suite
-│   ├── test_bot.py
-│   ├── test_commands.py
-│   ├── test_config.py
-│   ├── test_downloads.py
-│   ├── test_search.py
-│   ├── test_search_and_premium.py
-│   └── test_ytdlp.py
 ├── data/                   # Persistent storage (thumbnails, SQLite fallback cache)
 └── temp/                   # Temporary directory for processing audio downloads
 ```
@@ -231,61 +219,68 @@ Configure your `.env` file using the parameters below:
 
 ## 📦 Deployment Options
 
-### 1. CLI Management Script (`spotiverse.sh`)
+### 1. Local Deployment
 
-A production-ready control script is included in the root directory for easy process management:
+Deploy and run SpotiVerse locally on your system or VPS:
 
-```bash
-# Make the script executable
-chmod +x spotiverse.sh
-
-# Start the bot in the background (detached with PID tracking)
-./spotiverse.sh start
-
-# Check running status
-./spotiverse.sh status
-
-# View live streaming logs
-./spotiverse.sh logs
-
-# Restart the bot
-./spotiverse.sh restart
-
-# Stop the background bot process
-./spotiverse.sh stop
-
-# Run directly in foreground (debug mode)
-./spotiverse.sh run
-```
-
-### 2. Systemd Service (Linux Daemon)
-
-To keep SpotiVerse running continuously and restart automatically on server reboots:
-
-1. **Edit the Service File**
+1. **Clone the Repository**
    ```bash
-   nano spotiverse.service
-   ```
-   *Ensure the `User`, `WorkingDirectory`, and `ExecStart` paths match your server's configuration.*
-
-2. **Install and Enable the Unit**
-   ```bash
-   sudo cp spotiverse.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable spotiverse
-   sudo systemctl start spotiverse
+   git clone https://github.com/priest9680/SpotiVerse.git
+   cd SpotiVerse
    ```
 
-3. **Manage the Service**
+2. **Set Up a Virtual Environment**
    ```bash
-   # Check service status:
-   sudo systemctl status spotiverse
+   python3 -m venv venv
 
-   # View system journal logs:
-   sudo journalctl -u spotiverse -f
+   # Linux / macOS:
+   source venv/bin/activate
+
+   # Windows (PowerShell):
+   .\venv\Scripts\Activate.ps1
    ```
 
-### 3. Docker Container
+3. **Install Dependencies**
+   ```bash
+   # Ensure FFmpeg is installed:
+   sudo apt update && sudo apt install -y ffmpeg curl   # Debian/Ubuntu
+   # brew install ffmpeg                                # macOS
+   # choco install ffmpeg                               # Windows
+
+   # Install Python requirements:
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+
+4. **Configure Environment Variables**
+   ```bash
+   cp .env.sample .env
+   nano .env
+   ```
+
+5. **Run the Bot**
+   - **Foreground / Direct Mode:**
+     ```bash
+     python3 bot.py
+     ```
+   - **Background Mode (Using Screen):**
+     ```bash
+     # Start a new screen session:
+     screen -S spotiverse python3 bot.py
+     # Press Ctrl + A, then D to detach.
+
+     # Reattach to session:
+     screen -r spotiverse
+     ```
+   - **Background Mode (Using Nohup):**
+     ```bash
+     nohup python3 bot.py > bot.log 2>&1 &
+
+     # View live logs:
+     tail -f bot.log
+     ```
+
+### 2. Docker Container
 
 Build and deploy SpotiVerse in an isolated container with all system dependencies pre-configured:
 
@@ -308,22 +303,6 @@ Build and deploy SpotiVerse in an isolated container with all system dependencie
    ```bash
    docker logs -f spotiverse_bot
    ```
-
----
-
-## 🧪 Running Tests
-
-SpotiVerse includes a unit test suite covering configuration validation, command routers, download flows, database fallbacks, and search scrapers.
-
-To execute the test suite:
-
-```bash
-# Run all tests using unittest:
-python3 -m unittest discover tests
-
-# Or run tests using pytest (if installed):
-pytest -v
-```
 
 ---
 

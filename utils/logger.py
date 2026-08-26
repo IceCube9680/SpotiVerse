@@ -70,19 +70,34 @@ class BotLogger:
             # Don't raise — logging failure shouldn't crash bot
             logger.warning(f"Failed in log_new_user for {user_id}: {e}")
 
-    async def log_download(self, user_id: int, track_info: dict, format_used: str):
+    async def log_download(self, user_id: int, track_info: dict, format_used: str, username: str = None):
         """
         Log a download event to DOWNLOAD_LOG_CHANNEL if configured.
         track_info is expected to have 'title' and 'artist' keys (best-effort).
+        Displays User ID, or Username if User ID is missing.
         """
         try:
             title = track_info.get("title", "Unknown")
             artist = track_info.get("artist", "Unknown")
             timestamp = track_info.get("timestamp")
 
+            # Determine username if not explicitly passed
+            user_doc = db.get_user(user_id) if (user_id and hasattr(db, "get_user")) else {}
+            uname = username or (user_doc or {}).get("username") or track_info.get("username")
+
+            # Format user identifier: Show user ID if available, otherwise show username
+            if user_id:
+                user_line = f"**User ID:** `{user_id}`"
+                if uname:
+                    user_line += f" (@{uname})"
+            elif uname:
+                user_line = f"**Username:** @{uname}"
+            else:
+                user_line = "**User:** Unknown"
+
             message = (
                 f"**Download Recorded**\n"
-                f"**User:** `{user_id}`\n"
+                f"{user_line}\n"
                 f"**Track:** {title}\n"
                 f"**Artist:** {artist}\n"
                 f"**Format:** {format_used}\n"

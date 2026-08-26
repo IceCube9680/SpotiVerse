@@ -161,7 +161,7 @@ class AudioProcessor:
                 if os.path.exists(output_path):
                     try:
                         os.remove(output_path)
-                    except:
+                    except Exception:
                         pass
                 return False
             
@@ -227,6 +227,13 @@ class AudioProcessor:
     def add_metadata(audio_path, metadata, thumbnail_url=None):
         """Add metadata to audio file"""
         try:
+            meta = metadata or {}
+            title = meta.get("title") or "Unknown Title"
+            artist = meta.get("artist") or "Unknown Artist"
+            album = meta.get("album") or "Unknown Album"
+            year = str(meta.get("year") or "2023")
+            genre = meta.get("genre") or "Music"
+
             if audio_path.endswith('.mp3'):
                 try:
                     audio = ID3(audio_path)
@@ -236,24 +243,25 @@ class AudioProcessor:
                     audio = ID3(audio_path)
                 
                 # Add text metadata
-                audio["TIT2"] = TIT2(encoding=3, text=metadata.get("title", "Unknown Title"))
-                audio["TPE1"] = TPE1(encoding=3, text=metadata.get("artist", "Unknown Artist"))
-                audio["TALB"] = TALB(encoding=3, text=metadata.get("album", "Unknown Album"))
-                audio["TYER"] = TYER(encoding=3, text=str(metadata.get("year", "2023")))
-                audio["TCON"] = TCON(encoding=3, text=metadata.get("genre", "Music"))
+                audio["TIT2"] = TIT2(encoding=3, text=title)
+                audio["TPE1"] = TPE1(encoding=3, text=artist)
+                audio["TALB"] = TALB(encoding=3, text=album)
+                audio["TYER"] = TYER(encoding=3, text=year)
+                audio["TCON"] = TCON(encoding=3, text=genre)
                 
                 # Add thumbnail if available
                 if thumbnail_url:
                     try:
-                        response = requests.get(thumbnail_url)
-                        img_data = response.content
-                        audio["APIC"] = APIC(
-                            encoding=3,
-                            mime='image/jpeg',
-                            type=3,  # 3 is for cover image
-                            desc='Cover',
-                            data=img_data
-                        )
+                        response = requests.get(thumbnail_url, timeout=10)
+                        if response.status_code == 200:
+                            img_data = response.content
+                            audio["APIC"] = APIC(
+                                encoding=3,
+                                mime='image/jpeg',
+                                type=3,  # 3 is for cover image
+                                desc='Cover',
+                                data=img_data
+                            )
                     except Exception as e:
                         logger.error(f"Failed to add thumbnail: {e}")
                 
@@ -263,23 +271,24 @@ class AudioProcessor:
                 audio = FLAC(audio_path)
                 
                 # Add text metadata
-                audio["title"] = metadata.get("title", "Unknown Title")
-                audio["artist"] = metadata.get("artist", "Unknown Artist")
-                audio["album"] = metadata.get("album", "Unknown Album")
-                audio["date"] = str(metadata.get("year", "2023"))
-                audio["genre"] = metadata.get("genre", "Music")
+                audio["title"] = title
+                audio["artist"] = artist
+                audio["album"] = album
+                audio["date"] = year
+                audio["genre"] = genre
                 
                 # Add thumbnail if available
                 if thumbnail_url:
                     try:
-                        response = requests.get(thumbnail_url)
-                        img_data = response.content
-                        image = Picture()
-                        image.type = 3  # 3 is for cover image
-                        image.mime = 'image/jpeg'
-                        image.desc = 'Cover'
-                        image.data = img_data
-                        audio.add_picture(image)
+                        response = requests.get(thumbnail_url, timeout=10)
+                        if response.status_code == 200:
+                            img_data = response.content
+                            image = Picture()
+                            image.type = 3  # 3 is for cover image
+                            image.mime = 'image/jpeg'
+                            image.desc = 'Cover'
+                            image.data = img_data
+                            audio.add_picture(image)
                     except Exception as e:
                         logger.error(f"Failed to add thumbnail: {e}")
                 
@@ -295,6 +304,9 @@ class AudioProcessor:
     def generate_thumbnail(title, artist, size=(500, 500)):
         """Generate a simple thumbnail with title and artist"""
         try:
+            safe_t = str(title or "Unknown Title")
+            safe_a = str(artist or "Unknown Artist")
+
             # Create a blank image with a gradient background
             img = Image.new('RGB', size, color=(41, 128, 185))
             draw = ImageDraw.Draw(img)
@@ -303,13 +315,13 @@ class AudioProcessor:
             try:
                 title_font = ImageFont.truetype("arialbd.ttf", 40)
                 artist_font = ImageFont.truetype("arial.ttf", 30)
-            except:
+            except Exception:
                 title_font = ImageFont.load_default()
                 artist_font = ImageFont.load_default()
             
             # Calculate text positions
-            title_bbox = draw.textbbox((0, 0), title, font=title_font)
-            artist_bbox = draw.textbbox((0, 0), artist, font=artist_font)
+            title_bbox = draw.textbbox((0, 0), safe_t, font=title_font)
+            artist_bbox = draw.textbbox((0, 0), safe_a, font=artist_font)
             
             title_width = title_bbox[2] - title_bbox[0]
             title_height = title_bbox[3] - title_bbox[1]
@@ -324,14 +336,14 @@ class AudioProcessor:
             artist_y = title_y + title_height + 20
             
             # Draw text
-            draw.text((title_x, title_y), title, font=title_font, fill=(255, 255, 255))
-            draw.text((artist_x, artist_y), artist, font=artist_font, fill=(236, 240, 241))
+            draw.text((title_x, title_y), safe_t, font=title_font, fill=(255, 255, 255))
+            draw.text((artist_x, artist_y), safe_a, font=artist_font, fill=(236, 240, 241))
             
             # Save thumbnail (sanitize title and artist for safe filename)
             import re
-            safe_title = re.sub(r'[^\w\s-]', '', title).strip() or "title"
-            safe_artist = re.sub(r'[^\w\s-]', '', artist).strip() or "artist"
-            thumbnail_path = f"data/thumbnails/{safe_title}_{safe_artist}.jpg"
+            file_t = re.sub(r'[^\w\s-]', '', safe_t).strip() or "title"
+            file_a = re.sub(r'[^\w\s-]', '', safe_a).strip() or "artist"
+            thumbnail_path = f"data/thumbnails/{file_t}_{file_a}.jpg"
             os.makedirs(os.path.dirname(thumbnail_path), exist_ok=True)
             img.save(thumbnail_path)
             
