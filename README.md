@@ -225,7 +225,7 @@ Deploy and run SpotiVerse locally on your system or VPS:
 
 1. **Clone the Repository**
    ```bash
-   git clone https://github.com/priest9680/SpotiVerse.git
+   git clone https://github.com/IceCube9680/SpotiVerse
    cd SpotiVerse
    ```
 
