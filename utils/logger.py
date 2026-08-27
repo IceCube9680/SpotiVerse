@@ -38,7 +38,7 @@ class BotLogger:
         """
         try:
             # Ensure we have up-to-date user record (db.get_user will create default if missing)
-            user = db.get_user(user_id)
+            user = db.get_user(user_id) if hasattr(db, "get_user") else {}
 
             # If user already seen, do nothing
             if user.get("seen"):
@@ -46,16 +46,39 @@ class BotLogger:
                 return
 
             # Mark user as seen in DB (upsert) so subsequent /start won't re-log
-            db.update_user(user_id, {"seen": True})
+            if hasattr(db, "update_user"):
+                db.update_user(user_id, {"seen": True})
 
-            # Prepare contextual message. Avoid None/False mentions.
-            uname = username or ""
-            fname = first_name or ""
+            uname = username or user.get("username")
+            fname = first_name or user.get("first_name") or user.get("display_name")
+
+            if (not uname or not fname) and user_id and self.bot and hasattr(self.bot, "get_users"):
+                try:
+                    tg_user = await self.bot.get_users(user_id)
+                    if tg_user:
+                        if not uname and tg_user.username:
+                            uname = tg_user.username
+                        if not fname and tg_user.first_name:
+                            fname = tg_user.first_name
+                        if hasattr(db, "update_user"):
+                            updates = {}
+                            if tg_user.username:
+                                updates["username"] = tg_user.username
+                            if tg_user.first_name:
+                                updates["first_name"] = tg_user.first_name
+                                updates["display_name"] = tg_user.first_name
+                            if updates:
+                                db.update_user(user_id, updates)
+                except Exception:
+                    pass
+
+            uname_str = f"@{uname.lstrip('@')}" if uname else ""
+            fname_str = fname or ""
             msg = (
                 f"🔔 **New user started bot**\n\n"
                 f"**User ID:** `{user_id}`\n"
-                f"**Username:** @{uname}\n"
-                f"**Name:** {fname}"
+                f"**Username:** {uname_str}\n"
+                f"**Name:** {fname_str}"
             )
 
             # Use LOG_CHANNEL if provided, otherwise skip
@@ -83,15 +106,36 @@ class BotLogger:
 
             # Determine username if not explicitly passed
             user_doc = db.get_user(user_id) if (user_id and hasattr(db, "get_user")) else {}
-            uname = username or (user_doc or {}).get("username") or track_info.get("username")
+            uname = username or track_info.get("username") or (user_doc or {}).get("username")
+
+            # If username is still not found, try fetching from Telegram client
+            if not uname and user_id and self.bot and hasattr(self.bot, "get_users"):
+                try:
+                    tg_user = await self.bot.get_users(user_id)
+                    if tg_user:
+                        if tg_user.username:
+                            uname = tg_user.username
+                        if hasattr(db, "update_user"):
+                            updates = {}
+                            if tg_user.username:
+                                updates["username"] = tg_user.username
+                            if tg_user.first_name:
+                                updates["first_name"] = tg_user.first_name
+                                updates["display_name"] = tg_user.first_name
+                            if updates:
+                                db.update_user(user_id, updates)
+                except Exception:
+                    pass
 
             # Format user identifier: Show user ID if available, otherwise show username
             if user_id:
                 user_line = f"**User ID:** `{user_id}`"
                 if uname:
-                    user_line += f" (@{uname})"
+                    clean_uname = uname.lstrip("@")
+                    user_line += f" (@{clean_uname})"
             elif uname:
-                user_line = f"**Username:** @{uname}"
+                clean_uname = uname.lstrip("@")
+                user_line = f"**Username:** @{clean_uname}"
             else:
                 user_line = "**User:** Unknown"
 

@@ -24,8 +24,19 @@ def _list_int_env(var_name, default=None):
         except ValueError:
             pass
     return items or (default or [])
+
+def _bool_env(var_name, default=True):
+    val = os.getenv(var_name)
+    if val is None or val.strip() == "":
+        return default
+    return val.strip().lower() in ("true", "1", "yes", "on", "t")
         
 class Config:
+    # Premium Feature Enforcement (True = Premium members only; False = All features unlocked for everyone)
+    PREMIUM = _bool_env("PREMIUM", _bool_env("PREMIUM_MODE", True))
+    PREMIUM_MODE = PREMIUM
+
+
     # Pyrogram API credentials (REQUIRED)
     API_ID = _int_env("API_ID", 0)
     API_HASH = os.getenv("API_HASH", "")

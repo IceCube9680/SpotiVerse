@@ -151,6 +151,7 @@ class CommandsBinder:
         app.add_handler(MessageHandler(self._on_premium_wrapper, filters.command(["premium", "prem", "plan"])))
         app.add_handler(MessageHandler(self._on_addpremium_wrapper, filters.command(["addpremium", "add_premium", "setpremium", "set_premium", "give_premium", "givepremium"])))
         app.add_handler(MessageHandler(self._on_removepremium_wrapper, filters.command(["removepremium", "remove_premium", "delpremium", "del_premium", "unpremium", "revoke_premium", "remove_prem", "del_prem"])))
+        app.add_handler(MessageHandler(self._on_premiummode_wrapper, filters.command(["premiummode", "premium_mode", "setmode", "setpremiummode", "togglemode"])))
         app.add_handler(MessageHandler(self._on_stats_wrapper, filters.command(["stats", "stat"])))
         app.add_handler(MessageHandler(self._on_users_wrapper, filters.command(["users", "user", "totalusers"])))
         app.add_handler(MessageHandler(self._on_broadcast_wrapper, filters.command(["broadcast", "bc"])))
@@ -194,6 +195,9 @@ class CommandsBinder:
 
     async def _on_removepremium_wrapper(self, client: Client, message: Message):
         await self.remove_premium_command(client, message)
+
+    async def _on_premiummode_wrapper(self, client: Client, message: Message):
+        await self.premiummode_command(client, message)
 
     async def _on_stats_wrapper(self, client: Client, message: Message):
         await self.stats_command(client, message)
@@ -241,33 +245,45 @@ class CommandsBinder:
         except Exception:
             pass
 
+        prem_mode = db.get_premium_mode()
         is_premium = db.is_premium(user_id)
-        welcome_text = (
-            f"👋 Hello {first_name}!\n\n"
-            f"Welcome to **SpotiVerse Bot**!\n\n"
-            "I can search and download high-quality audio from:\n"
-            "• Spotify\n• JioSaavn\n• YouTube\n\n"
-            f"**Your Status:** {'💎 Premium User' if is_premium else '👤 Free User'}\n"
-        )
-        if is_premium:
-            if rec.get("premium_until"):
-                try:
-                    tu = rec.get("premium_until")
-                    if isinstance(tu, datetime):
-                        welcome_text += f"**Premium Until:** {tu.strftime('%Y-%m-%d')}\n"
-                    else:
-                        welcome_text += f"**Premium Until:** {str(tu)}\n"
-                except Exception:
-                    pass
-            welcome_text += "**Downloads:** Unlimited ♾️ (No daily limit)\n\nEnjoy your unlimited high-quality downloads!"
-        else:
-            welcome_text += (
-                f"**Free Limit:** {rec.get('downloads_today', 0)}/{Config.FREE_USER_DAILY_LIMIT} downloads today\n"
-                "🔍 Search & download songs using `/search <song name>`\n\n"
-                "💎 Upgrade to Premium for unlimited downloads and album/playlist support!\n"
-                "Contact: @icecube9608\n\n"
-                f"👤 **Your User ID:** `{user_id}`"
+        if not prem_mode:
+            welcome_text = (
+                f"👋 Hello {first_name}!\n\n"
+                f"Welcome to **SpotiVerse Bot**!\n\n"
+                "I can search and download high-quality audio from:\n"
+                "• Spotify\n• JioSaavn\n• YouTube\n\n"
+                "**Your Status:** ✨ All Features Unlocked (Public Mode)\n"
+                "**Downloads:** Unlimited ♾️ (No daily limit)\n\n"
+                "🎉 All features (unlimited downloads, albums/playlists, high quality audio) are currently **FREE for everyone**!"
             )
+        else:
+            welcome_text = (
+                f"👋 Hello {first_name}!\n\n"
+                f"Welcome to **SpotiVerse Bot**!\n\n"
+                "I can search and download high-quality audio from:\n"
+                "• Spotify\n• JioSaavn\n• YouTube\n\n"
+                f"**Your Status:** {'💎 Premium User' if is_premium else '👤 Free User'}\n"
+            )
+            if is_premium:
+                if rec.get("premium_until"):
+                    try:
+                        tu = rec.get("premium_until")
+                        if isinstance(tu, datetime):
+                            welcome_text += f"**Premium Until:** {tu.strftime('%Y-%m-%d')}\n"
+                        else:
+                            welcome_text += f"**Premium Until:** {str(tu)}\n"
+                    except Exception:
+                        pass
+                welcome_text += "**Downloads:** Unlimited ♾️ (No daily limit)\n\nEnjoy your unlimited high-quality downloads!"
+            else:
+                welcome_text += (
+                    f"**Free Limit:** {rec.get('downloads_today', 0)}/{Config.FREE_USER_DAILY_LIMIT} downloads today\n"
+                    "🔍 Search & download songs using `/search <song name>`\n\n"
+                    "💎 Upgrade to Premium for unlimited downloads and album/playlist support!\n"
+                    "Contact: @icecube9608\n\n"
+                    f"👤 **Your User ID:** `{user_id}`"
+                )
 
         try:
             await message.reply_text(welcome_text, reply_markup=_build_start_keyboard())
@@ -325,19 +341,31 @@ class CommandsBinder:
             await loading_msg.edit_text(f"❌ Search failed: {e}")
 
     async def help_command(self, client: Client, message: Message):
+        prem_mode = db.get_premium_mode()
         help_text = (
             "🤖 **SpotiVerse Bot Commands**\n\n"
             "**Music Commands:**\n"
-            "• `/search <query>` - Search for music (Free & Premium)\n"
-            "• `/download <url>` - Download songs/albums (Premium Only)\n\n"
+            "• `/search <query>` - Search for music\n"
+            f"• `/download <url>` - Download songs/albums {'(Free for All)' if not prem_mode else '(Premium Only)'}\n\n"
             "**User Commands:**\n"
             "• `/start` - Start the bot\n"
             "• `/help` - Show this help message\n"
             "• `/userinfo` - Show your user information\n"
             "• `/premium` - Show premium plans & status\n"
-            "• `/settings` - Configure audio format/quality (Premium only)\n\n"
-            "Need support? Contact @icecube9608"
+            f"• `/settings` - Configure audio format/quality {'(Free for All)' if not prem_mode else '(Premium only)'}\n\n"
         )
+        if Config.is_authorized(message):
+            help_text += (
+                "**Admin Commands:**\n"
+                "• `/premiummode <true|false>` - Toggle Premium Mode on/off\n"
+                "• `/addpremium <user_id> [days]` - Grant premium to user\n"
+                "• `/removepremium <user_id>` - Remove premium from user\n"
+                "• `/stats` - View bot statistics\n"
+                "• `/users` - View user counts\n"
+                "• `/broadcast <msg>` - Send broadcast message\n"
+                "• `/logs` - Get bot log file\n\n"
+            )
+        help_text += "Need support? Contact @icecube9608"
         await message.reply_text(help_text)
 
     async def settings_command(self, client: Client, message: Message):
@@ -367,6 +395,18 @@ class CommandsBinder:
             await safe_answer_callback(callback_query, text="User not found")
             return
         user_id = callback_query.from_user.id
+        from_user = callback_query.from_user
+        username = getattr(from_user, "username", None)
+        first_name = getattr(from_user, "first_name", "there") or "there"
+
+        # Update user profile in DB
+        try:
+            updates = {"first_name": first_name, "display_name": first_name}
+            if username:
+                updates["username"] = username
+            db.update_user(user_id, updates)
+        except Exception:
+            pass
 
         # Quick ACK to stop the spinner
         await safe_answer_callback(callback_query)
@@ -376,32 +416,43 @@ class CommandsBinder:
             try:
                 # Fetch user record
                 rec = db.get_user(user_id) or {}
+                prem_mode = db.get_premium_mode()
 
-                premium_text = (
-                    "💎 **Premium Features**\n\n"
-                    "• **Unlimited downloads** - No daily limits\n"
-                    "• **Advanced search** - Search across multiple platforms\n"
-                    "• **High quality audio** - FLAC and high-bitrate MP3\n"
-                    "• **Batch downloads** - Download albums and playlists\n"
-                    "• **Priority support** - Faster response times\n\n"
-                )
-
-                if db.is_premium(user_id):
-                    tu = rec.get("premium_until")
-                    try:
-                        if tu:
-                            premium_text += f"**Your premium is active until:** {tu.strftime('%Y-%m-%d')}\n\n"
-                        else:
-                            premium_text += "**Your premium is active:** Lifetime / Unlimited ♾️\n\n"
-                    except Exception:
-                        premium_text += f"**Your premium is active until:** {str(tu)}\n\n"
-                else:
-                    premium_text += (
-                        "**Free Account Limitations:**\n"
-                        f"• {Config.FREE_USER_DAILY_LIMIT} downloads per day\n"
-                        "**To upgrade to premium,** contact @icecube9608\n"
-                        f"**User ID**: `{user_id}`"
+                if not prem_mode:
+                    premium_text = (
+                        "🎉 **All Features Unlocked! (Public Mode)**\n\n"
+                        "• **Unlimited downloads** - No daily limits for anyone\n"
+                        "• **Advanced search** - Search Spotify, JioSaavn & YouTube\n"
+                        "• **High quality audio** - FLAC and 320kbps MP3 settings\n"
+                        "• **Batch downloads** - Albums, playlists & artist tracks\n\n"
+                        "All bot features are currently **FREE** for everyone to enjoy! 🚀"
                     )
+                else:
+                    premium_text = (
+                        "💎 **Premium Features**\n\n"
+                        "• **Unlimited downloads** - No daily limits\n"
+                        "• **Advanced search** - Search across multiple platforms\n"
+                        "• **High quality audio** - FLAC and high-bitrate MP3\n"
+                        "• **Batch downloads** - Download albums and playlists\n"
+                        "• **Priority support** - Faster response times\n\n"
+                    )
+
+                    if db.is_premium(user_id):
+                        tu = rec.get("premium_until")
+                        try:
+                            if tu:
+                                premium_text += f"**Your premium is active until:** {tu.strftime('%Y-%m-%d')}\n\n"
+                            else:
+                                premium_text += "**Your premium is active:** Lifetime / Unlimited ♾️\n\n"
+                        except Exception:
+                            premium_text += f"**Your premium is active until:** {str(tu)}\n\n"
+                    else:
+                        premium_text += (
+                            "**Free Account Limitations:**\n"
+                            f"• {Config.FREE_USER_DAILY_LIMIT} downloads per day\n"
+                            "**To upgrade to premium,** contact @icecube9608\n"
+                            f"**User ID**: `{user_id}`"
+                        )
 
                 await callback_query.message.edit_text(premium_text, reply_markup=_build_premium_markup())
 
@@ -420,26 +471,40 @@ class CommandsBinder:
             try:
                 display_name = _display_name_from_callback(callback_query)
                 rec = db.get_user(user_id) or {}
+                prem_mode = db.get_premium_mode()
                 is_premium = db.is_premium(user_id)
-                text = (
-                    f"👋 Hello {display_name}!\n\n"
-                    "Welcome to **SpotiVerse Bot**!\n\n"
-                    "I can download high-quality audio from various platforms including:\n"
-                    "• Spotify\n"
-                    "• YouTube\n"
-                    "• JioSaavn\n\n"
-                    f"**Your Status:** {'💎 Premium User' if is_premium else '👤 Free User'}\n"
-                )
-                if is_premium:
-                    if rec.get("premium_until"):
-                        tu = rec.get("premium_until")
-                        try:
-                            text += f"**Premium Until:** {tu.strftime('%Y-%m-%d')}\n"
-                        except Exception:
-                            text += f"**Premium Until:** {str(tu)}\n"
-                    text += "**Downloads:** Unlimited ♾️ (No daily limit)\n\n"
+                if not prem_mode:
+                    text = (
+                        f"👋 Hello {display_name}!\n\n"
+                        "Welcome to **SpotiVerse Bot**!\n\n"
+                        "I can download high-quality audio from various platforms including:\n"
+                        "• Spotify\n"
+                        "• YouTube\n"
+                        "• JioSaavn\n\n"
+                        "**Your Status:** ✨ All Features Unlocked (Public Mode)\n"
+                        "**Downloads:** Unlimited ♾️ (No daily limit)\n\n"
+                        "🎉 All features (unlimited downloads, albums/playlists, high quality audio) are currently **FREE for everyone**!"
+                    )
                 else:
-                    text += f"**Free Limits:** {rec.get('downloads_today', 0)}/{Config.FREE_USER_DAILY_LIMIT} downloads today\n\n💎 Upgrade to premium for unlimited downloads and album/playlist support!\n\n"
+                    text = (
+                        f"👋 Hello {display_name}!\n\n"
+                        "Welcome to **SpotiVerse Bot**!\n\n"
+                        "I can download high-quality audio from various platforms including:\n"
+                        "• Spotify\n"
+                        "• YouTube\n"
+                        "• JioSaavn\n\n"
+                        f"**Your Status:** {'💎 Premium User' if is_premium else '👤 Free User'}\n"
+                    )
+                    if is_premium:
+                        if rec.get("premium_until"):
+                            tu = rec.get("premium_until")
+                            try:
+                                text += f"**Premium Until:** {tu.strftime('%Y-%m-%d')}\n"
+                            except Exception:
+                                text += f"**Premium Until:** {str(tu)}\n"
+                        text += "**Downloads:** Unlimited ♾️ (No daily limit)\n\n"
+                    else:
+                        text += f"**Free Limits:** {rec.get('downloads_today', 0)}/{Config.FREE_USER_DAILY_LIMIT} downloads today\n\n💎 Upgrade to premium for unlimited downloads and album/playlist support!\n\n"
                 try:
                     await callback_query.message.edit_text(text, reply_markup=_build_start_keyboard())
                 except Exception:
@@ -816,13 +881,20 @@ class CommandsBinder:
             return
 
         user = db.get_user(target_user_id) or {}
+        prem_mode = db.get_premium_mode()
         is_prem = db.is_premium(target_user_id)
+
+        if not prem_mode:
+            status_display = "✨ Active (Public Mode - All Features Unlocked)"
+        else:
+            status_display = '✅ Active (💎 Premium)' if is_prem else '❌ Inactive (👤 Free User)'
+
         info_text = (
             f"👤 **User Information**\n\n"
             f"**User ID:** `{target_user_id}`\n"
-            f"**Premium Status:** {'✅ Active (💎 Premium)' if is_prem else '❌ Inactive (👤 Free User)'}\n"
+            f"**Premium Status:** {status_display}\n"
         )
-        if user.get('premium') and user.get('premium_until'):
+        if prem_mode and user.get('premium') and user.get('premium_until'):
             tu = user['premium_until']
             try:
                 info_text += f"**Premium Until:** {tu.strftime('%Y-%m-%d %H:%M UTC')}\n"
@@ -847,9 +919,31 @@ class CommandsBinder:
     async def premium_command(self, client: Client, message: Message):
         if not message.from_user:
             return
+        parts = _get_command_parts(message)
+        if len(parts) > 1 and Config.is_authorized(message):
+            arg = parts[1].strip().lower()
+            if arg in ("true", "false", "on", "off", "enable", "disable", "1", "0", "t", "f", "yes", "no"):
+                await self.premiummode_command(client, message)
+                return
+
         user_id = message.from_user.id
         rec = db.get_user(user_id) or {}
+        prem_mode = db.get_premium_mode()
         is_prem = db.is_premium(user_id)
+
+        if not prem_mode:
+            premium_text = (
+                "🎉 **All Features Unlocked! (Public Mode Active)**\n\n"
+                "• **Unlimited Downloads** - No daily limits for any user\n"
+                "• **Batch Downloads** - Download complete albums & playlists\n"
+                "• **High Quality Audio** - FLAC & 320kbps MP3 settings\n"
+                "• **Custom Format Settings** - Configure format & bitrate in `/settings`\n"
+                "• **Direct Link Downloads** - Send any Spotify or YouTube link directly\n\n"
+                "All premium features are currently **100% FREE for all users**! 🚀"
+            )
+            await message.reply_text(premium_text)
+            return
+
         premium_text = (
             "💎 **Premium Features**\n\n"
             "• **Unlimited Downloads** - Download any track with no restrictions\n"
@@ -871,7 +965,7 @@ class CommandsBinder:
         else:
             premium_text += (
                 "**Free vs Premium:**\n"
-                "• 🔍 **Search & Downloads:** Free users get 5 song downloads/day (`/search <query>`)\n"
+                f"• 🔍 **Search & Downloads:** Free users get {Config.FREE_USER_DAILY_LIMIT} song downloads/day (`/search <query>`)\n"
                 "• 💎 **Premium:** Unlimited downloads, 320kbps/FLAC & album/playlist support\n\n"
                 "**To upgrade to premium,** contact @icecube9608\n"
                 f"**Your User ID**: `{user_id}`"
@@ -1033,6 +1127,47 @@ class CommandsBinder:
             logger.error(f"Error in remove_premium: {e}", exc_info=True)
             await message.reply_text(f"❌ Error: {e}")
 
+    async def premiummode_command(self, client: Client, message: Message):
+        """Toggle or view global premium enforcement mode (owner/admin only)."""
+        if not Config.is_authorized(message):
+            await message.reply_text("❌ This command is for bot owner only.")
+            return
+
+        parts = _get_command_parts(message)
+        if len(parts) < 2:
+            current_mode = db.get_premium_mode()
+            status_desc = "🔒 **ENABLED (Strict Mode)** — Premium features restricted to premium users only." if current_mode else "🔓 **DISABLED (Public Mode)** — All features UNLOCKED for EVERY user!"
+            await message.reply_text(
+                f"⚙️ **Premium Mode Setting:**\n\n"
+                f"• Status: {status_desc}\n"
+                f"• Current value: `{current_mode}`\n\n"
+                f"**How to change:**\n"
+                f"• `/premiummode true` or `/premiummode on` (Enable strict premium requirements)\n"
+                f"• `/premiummode false` or `/premiummode off` (Unlock all features for everyone)"
+            )
+            return
+
+        action = parts[1].strip().lower()
+        if action in ("true", "on", "enable", "1", "yes", "t"):
+            db.set_premium_mode(True)
+            await message.reply_text(
+                "🔒 **Premium Mode is now ENABLED (True)**\n\n"
+                "• Advanced features (unlimited downloads, direct `/download`, albums/playlists, `/settings`) are now restricted to **Premium Users** only.\n"
+                f"• Free users are subject to daily limits ({Config.FREE_USER_DAILY_LIMIT} downloads/day)."
+            )
+        elif action in ("false", "off", "disable", "0", "no", "f"):
+            db.set_premium_mode(False)
+            await message.reply_text(
+                "🔓 **Premium Mode is now DISABLED (False)**\n\n"
+                "🎉 **All features are now UNLOCKED for ALL users!**\n"
+                "• Unlimited downloads for everyone (no daily limits)\n"
+                "• Direct `/download <url>` unlocked for everyone\n"
+                "• Album & playlist downloads unlocked for everyone\n"
+                "• `/settings` (FLAC & 320kbps MP3) unlocked for everyone"
+            )
+        else:
+            await message.reply_text("❌ Invalid option. Use `/premiummode true` or `/premiummode false`.")
+
     async def logs_command(self, client, message: Message):
         """Handle /logs command (owner only) — sends the latest log file or recent lines."""
         if not Config.is_authorized(message):
@@ -1077,8 +1212,11 @@ class CommandsBinder:
             return
         try:
             stats = db.get_user_stats()
+            prem_mode = db.get_premium_mode()
+            mode_badge = "🔒 Strict (True)" if prem_mode else "🔓 Public / Free (False)"
             stats_text = (
                 "📊 **Bot Statistics**\n\n"
+                f"**Premium Mode:** {mode_badge}\n"
                 f"**Total Users:** {stats['total_users']}\n"
                 f"**Premium Users:** {stats['premium_users']}\n"
                 f"**Free Users:** {stats['free_users']}\n"
@@ -1113,6 +1251,8 @@ class CommandsBinder:
 
         try:
             stats = db.get_user_stats()
+            prem_mode = db.get_premium_mode()
+            mode_badge = "🔒 Strict (True)" if prem_mode else "🔓 Public / Free (False)"
             total = stats["total_users"]
             premium = stats["premium_users"]
             free = stats["free_users"]
@@ -1121,6 +1261,7 @@ class CommandsBinder:
 
             text = (
                 "👥 **SpotiVerse User Statistics**\n\n"
+                f"⚙️ **Premium Mode:** `{mode_badge}`\n"
                 f"👤 **Total Users:** `{total:,}`\n"
                 f"💎 **Premium Users:** `{premium:,}`\n"
                 f"🆓 **Free Users:** `{free:,}`\n"

@@ -177,6 +177,7 @@ Configure your `.env` file using the parameters below:
 | `YOUTUBE_API_KEY` | `String` | No | `""` | Optional YouTube Data API v3 key. |
 | `LOG_CHANNEL` | `Integer` | No | `0` | Telegram Channel ID (e.g. `-100...`) for user onboarding & system logs. |
 | `DOWNLOAD_LOG_CHANNEL` | `Integer` | No | `0` | Telegram Channel ID for download audit logs. |
+| `PREMIUM` / `PREMIUM_MODE` | `Boolean` | No | `True` | `True` = Premium features restricted to premium users; `False` = All features unlocked for everyone. |
 | `FREE_USER_DAILY_LIMIT` | `Integer` | No | `5` | Daily download quota for free users (`0` or large number to disable). |
 | `MAX_CONCURRENT_DOWNLOADS` | `Integer` | No | `3` | Maximum simultaneous download threads. |
 | `COOKIES_FILE` | `String` | No | `cookies.txt` | Path to exported YouTube Netscape cookies to bypass bot blocks. |
@@ -202,6 +203,8 @@ Configure your `.env` file using the parameters below:
 
 | Command | Aliases | Parameters | Description |
 | :--- | :--- | :--- | :--- |
+| `/premiummode` | `/setmode`, `/togglemode` | `<true\|false>` | Toggle global premium mode (`true` = strict premium, `false` = all features unlocked for everyone). |
+| `/premium <true\|false>` | `/prem`, `/plan` | `<true\|false>` | Quickly toggle global premium enforcement on or off. |
 | `/add_premium` | `/give_premium`, `/set_premium` | `<user_id>` `<duration>` | Grants premium status to a user (e.g., `7d`, `30d`, `1y`, `lifetime`). |
 | `/remove_premium` | `/del_premium`, `/unpremium` | `<user_id>` | Revokes premium status from a specific user. |
 | `/stats` | `/stat` | None | Displays real-time bot statistics (active users, total downloads, DB status). |

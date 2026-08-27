@@ -322,16 +322,67 @@ class Database:
 
         return True, None
 
+    def get_premium_mode(self) -> bool:
+        """
+        Get the current premium enforcement mode.
+        Returns:
+            True: Premium mode is ON (only premium members get premium features).
+            False: Premium mode is OFF (all features unlocked for everyone).
+        """
+        from config import Config
+        self._ensure()
+        if self.available and self.db is not None:
+            try:
+                settings_col = self.db.get_collection("bot_settings")
+                doc = settings_col.find_one({"key": "premium_mode"})
+                if doc and "value" in doc:
+                    return bool(doc["value"])
+            except Exception as e:
+                logger.debug(f"Error reading premium_mode from DB: {e}")
+        # fallback to in-memory store or Config
+        if "premium_mode" in _fallback_store:
+            return bool(_fallback_store["premium_mode"])
+        return getattr(Config, "PREMIUM", getattr(Config, "PREMIUM_MODE", True))
+
+    def set_premium_mode(self, mode: bool) -> bool:
+        """
+        Update the current premium enforcement mode dynamically in Config, DB and in-memory fallback.
+        """
+        from config import Config
+        mode = bool(mode)
+        Config.PREMIUM = mode
+        Config.PREMIUM_MODE = mode
+        _fallback_store["premium_mode"] = mode
+
+        self._ensure()
+        if self.available and self.db is not None:
+            try:
+                settings_col = self.db.get_collection("bot_settings")
+                settings_col.update_one(
+                    {"key": "premium_mode"},
+                    {"$set": {"key": "premium_mode", "value": mode, "updated_at": _get_utc_now()}},
+                    upsert=True
+                )
+            except Exception as e:
+                logger.warning(f"Error persisting premium_mode in DB: {e}")
+        return mode
+
     def is_premium(self, user_id: int) -> bool:
         """
         Check if user has active premium status.
         Handles:
-        1. Bot owners (always True)
-        2. Config.PREMIUM_USERS list (always True)
-        3. Database active premium records (auto-expires if past premium_until)
+        1. Global PREMIUM_MODE toggle: If PREMIUM_MODE is False (public mode), ALL users are considered premium.
+        2. Bot owners (always True)
+        3. Config.PREMIUM_USERS list (always True)
+        4. Database active premium records (auto-expires if past premium_until)
         """
         if not user_id:
             return False
+
+        # When premium mode is OFF (False), all features are enabled for everyone
+        if not self.get_premium_mode():
+            return True
+
         from config import Config
         if Config.is_owner(user_id) or user_id in getattr(Config, "PREMIUM_USERS", []):
             return True
@@ -398,6 +449,13 @@ class Database:
         """Record a download (track_info should be serializable)"""
         self._ensure()
         uname = username or track_info.get("username")
+        if not uname and hasattr(self, "get_user"):
+            try:
+                u = self.get_user(user_id)
+                if u:
+                    uname = u.get("username")
+            except Exception:
+                pass
         entry = {"user_id": user_id, "username": uname, "track_info": track_info, "timestamp": _get_utc_now()}
         if self.available and self.downloads is not None:
             try:

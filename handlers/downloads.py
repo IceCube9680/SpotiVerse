@@ -357,7 +357,7 @@ class DownloadHandler:
         preferred_format = eff_settings.get("preferred_format") or user.get("preferred_format", "mp3")
         if not isinstance(preferred_format, str):
             preferred_format = "mp3"
-        preferred_quality = eff_settings.get("preferred_quality") or user.get("preferred_quality", 320 if user.get("premium") else 64)
+        preferred_quality = eff_settings.get("preferred_quality") or user.get("preferred_quality", 320 if db.is_premium(user_id) else 64)
         if isinstance(preferred_quality, (MagicMock if "MagicMock" in globals() else type(None))):
             preferred_quality = 320
 
@@ -460,9 +460,34 @@ class DownloadHandler:
             track_info["format"] = preferred_format
             track_info["quality"] = preferred_quality
 
-            uname = getattr(getattr(message, "from_user", None), "username", None) or (user or {}).get("username")
+            user = db.get_user(user_id) if hasattr(db, "get_user") else {}
+            uname = (user or {}).get("username")
+            fname = (user or {}).get("first_name") or (user or {}).get("display_name")
+
+            if not uname and hasattr(self, "bot") and self.bot and hasattr(self.bot, "get_users"):
+                try:
+                    tg_user = await self.bot.get_users(user_id)
+                    if tg_user:
+                        if tg_user.username:
+                            uname = tg_user.username
+                        if tg_user.first_name and not fname:
+                            fname = tg_user.first_name
+                        if hasattr(db, "update_user"):
+                            updates = {}
+                            if tg_user.username:
+                                updates["username"] = tg_user.username
+                            if tg_user.first_name:
+                                updates["first_name"] = tg_user.first_name
+                                updates["display_name"] = tg_user.first_name
+                            if updates:
+                                db.update_user(user_id, updates)
+                except Exception:
+                    pass
+
             if uname:
                 track_info["username"] = uname
+            if fname:
+                track_info["first_name"] = fname
             
             # Record the download in DB (best-effort; does not block UI)
             try:
