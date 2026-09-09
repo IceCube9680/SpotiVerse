@@ -2,7 +2,7 @@
 import os
 import logging
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from pyrogram.errors import MessageNotModified
 from pyrogram import Client, filters
@@ -14,12 +14,19 @@ from pyrogram.types import (
 )
 from pyrogram.handlers import MessageHandler, CallbackQueryHandler
 import re
-from info import DEFAULT_SETTINGS
+from info import DEFAULT_SETTINGS, get_premium_plans, get_plan_by_id
 from config import Config
-from utils.db import db
+from utils.db import db, _parse_datetime
 from utils.logger import BotLogger
+from utils.providers import ProviderRegistry
+from utils.feature_gates import FeatureGate
+from utils.payment import payment_manager
+from utils.admin_security import admin_security
+from utils.audio_formats import AudioProfile, AudioFormat
+from utils.ui_helpers import safe_answer_callback, safe_edit_or_reply
 from handlers.search import SearchHandler
 from handlers.downloads import DownloadHandler
+from handlers.admin_panel import AdminPanelHandler
 from pyrogram.types import InputMediaDocument
 
 logger = logging.getLogger(__name__)
@@ -28,25 +35,6 @@ logger = logging.getLogger(__name__)
 # ----------------------
 # Small helpers
 # ----------------------
-async def safe_answer_callback(callback_query: Optional[CallbackQuery], **kwargs):
-    """
-    Safely answer callback queries. Ignore QUERY_ID_INVALID and some benign errors.
-    """
-    if not callback_query:
-        return
-    try:
-        await callback_query.answer(**kwargs)
-    except Exception as e:
-        serr = str(e).lower()
-        if "query_id_invalid" in serr or "query id invalid" in serr:
-            logger.debug("Ignored QUERY_ID_INVALID when answering callback query.")
-            return
-        if "peer_id_invalid" in serr or "user_is_blocked" in serr:
-            logger.debug(f"Ignored callback answer error: {serr}")
-            return
-        logger.warning(f"Failed to answer callback query: {e}")
-
-
 def _get_command_parts(message: Message) -> list[str]:
     if message and hasattr(message, "command") and message.command:
         return list(message.command)
@@ -62,7 +50,6 @@ def _display_name_from_user_obj(user_obj) -> str:
 
 
 def _display_name_from_callback(callback_query: CallbackQuery) -> str:
-    # prefer clicking user
     try:
         u = callback_query.from_user
         if u and (u.first_name or u.username):
@@ -70,7 +57,6 @@ def _display_name_from_callback(callback_query: CallbackQuery) -> str:
     except Exception:
         pass
 
-    # fallback to DB-stored display name
     try:
         if callback_query.from_user:
             rec = db.get_user(callback_query.from_user.id)
@@ -82,47 +68,87 @@ def _display_name_from_callback(callback_query: CallbackQuery) -> str:
     return "there"
 
 
-def _build_start_keyboard() -> InlineKeyboardMarkup:
+def _format_time_remaining(expiry_dt: datetime) -> str:
+    if not expiry_dt:
+        return "N/A"
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if expiry_dt < now:
+        return "Expired"
+    diff = expiry_dt - now
+    days = diff.days
+    hours = diff.seconds // 3600
+    if days >= 3650:
+        return "Lifetime ♾️"
+    if days > 0:
+        return f"{days} day(s) {hours} hr(s) remaining"
+    return f"{hours} hr(s) remaining"
+
+
+def _build_start_keyboard(user_id: int = 0) -> InlineKeyboardMarkup:
     kb = [
-        [InlineKeyboardButton("📥 Download", callback_data="menu_download")],
-        [InlineKeyboardButton("💎 Premium Info", callback_data="premium_info")],
-        [InlineKeyboardButton("⚙️ Settings", callback_data="menu_settings")],
+        [InlineKeyboardButton("📥 Download Music", callback_data="menu_download")],
+        [InlineKeyboardButton("👑 Premium Plans", callback_data="view_plans"),
+         InlineKeyboardButton("👤 My Profile", callback_data="user_profile")],
+        [InlineKeyboardButton("⚙️ Settings", callback_data="menu_settings"),
+         InlineKeyboardButton("❓ Help", callback_data="menu_help")]
     ]
+    if user_id and Config.is_owner(user_id):
+        kb.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="adm_main")])
     return InlineKeyboardMarkup(kb)
 
 
 def _build_premium_markup() -> InlineKeyboardMarkup:
     kb = [
+        [InlineKeyboardButton("💎 View All Plans", callback_data="view_plans")],
         [InlineKeyboardButton("⬅️ Back", callback_data="back")],
     ]
     return InlineKeyboardMarkup(kb)
 
 
 def _settings_keyboard_for(user: dict) -> InlineKeyboardMarkup:
-    current_format = user.get("preferred_format", "mp3")
-    current_quality = user.get("preferred_quality", 320)
+    uid = user.get("user_id") or user.get("telegram_id")
+    is_premium = bool(user.get("lifetime_premium")) or bool(user.get("premium"))
+    if uid and Config.is_owner(uid):
+        is_premium = True
 
-    if current_format == "mp3":
-        format_text = "Format: MP3 → FLAC"
+    allowed_formats = AudioProfile.get_allowed_formats(is_premium=is_premium)
+    current_format = str(user.get("preferred_format", "mp3")).lower().strip()
+    if current_format not in allowed_formats:
+        current_format = allowed_formats[0]
+
+    next_fmt_idx = (allowed_formats.index(current_format) + 1) % len(allowed_formats)
+    next_fmt = allowed_formats[next_fmt_idx]
+
+    allowed_qualities = AudioProfile.get_allowed_qualities(current_format, is_premium=is_premium)
+    current_quality = user.get("preferred_quality", AudioProfile.get_default_quality(current_format, is_premium))
+
+    curr_q_str = str(current_quality).lower().strip()
+    match_idx = -1
+    for i, q in enumerate(allowed_qualities):
+        if str(q).lower().strip() == curr_q_str:
+            match_idx = i
+            break
+    if match_idx == -1:
+        current_quality = allowed_qualities[-1]
+        next_q = allowed_qualities[0]
     else:
-        format_text = "Format: FLAC → MP3"
+        next_q = allowed_qualities[(match_idx + 1) % len(allowed_qualities)]
 
-    if current_format == "mp3":
-        qualities = [64, 128, 192, 256, 320]
-        cur = current_quality if isinstance(current_quality, int) else 320
-        next_q = qualities[(qualities.index(cur) + 1) % len(qualities)] if cur in qualities else qualities[-1]
-        quality_text = f"Quality: {cur} → {next_q}"
+    cur_label = AudioProfile.format_quality_label(current_format, current_quality)
+    next_label = AudioProfile.format_quality_label(current_format, next_q)
+
+    kb = []
+    if len(allowed_formats) > 1:
+        kb.append([InlineKeyboardButton(f"🎵 Format: {current_format.upper()} → {next_fmt.upper()}", callback_data="setting_format")])
     else:
-        qualities = ["low", "medium", "high"]
-        cur = str(current_quality)
-        next_q = qualities[(qualities.index(cur) + 1) % len(qualities)] if cur in qualities else qualities[-1]
-        quality_text = f"Quality: {cur} → {next_q}"
+        kb.append([InlineKeyboardButton(f"🎵 Format: {current_format.upper()} (MP3 Only)", callback_data="setting_format_info")])
 
-    kb = [
-        [InlineKeyboardButton(format_text, callback_data="setting_format")],
-        [InlineKeyboardButton(quality_text, callback_data="setting_quality")],
-        [InlineKeyboardButton("🔙 Back", callback_data="main_menu")],
-    ]
+    kb.append([InlineKeyboardButton(f"🎚️ Quality: {cur_label} → {next_label}", callback_data="setting_quality")])
+
+    if not is_premium:
+        kb.append([InlineKeyboardButton("💎 Unlock Lossless FLAC, M4A, OGG & WAV", callback_data="view_plans")])
+
+    kb.append([InlineKeyboardButton("🔙 Back", callback_data="main_menu")])
     return InlineKeyboardMarkup(kb)
 
 
@@ -130,25 +156,23 @@ def _settings_keyboard_for(user: dict) -> InlineKeyboardMarkup:
 # Binder class: registers handlers on a pyrogram.Client
 # ----------------------
 class CommandsBinder:
-    """
-    Create an instance with the running Client, SearchHandler and DownloadHandler.
-    It registers message & callback handlers on the Client.
-    """
     def __init__(self, app: Client, search_handler: SearchHandler, download_handler: DownloadHandler, logger_obj: BotLogger = None):
         self.app = app
         self.search_handler = search_handler
         self.download_handler = download_handler
         self.logger = logger_obj or BotLogger(app)
+        self.admin_panel = AdminPanelHandler(app)
 
-        # register message handlers as Handler objects (correct API)
-        # MessageHandler(callback, filters)
+        # Register message handlers
         app.add_handler(MessageHandler(self._on_start_wrapper, filters.command("start")))
         app.add_handler(MessageHandler(self._on_search_wrapper, filters.command(["search", "s", "find"])))
         app.add_handler(MessageHandler(self._on_help_wrapper, filters.command(["help", "h"])))
         app.add_handler(MessageHandler(self._on_settings_wrapper, filters.command(["settings", "setting", "set"])))
         app.add_handler(MessageHandler(self._on_download_wrapper, filters.command(["download", "dl", "d"])))
-        app.add_handler(MessageHandler(self._on_userinfo_wrapper, filters.command(["userinfo", "user_info", "info", "myinfo", "me"])))
-        app.add_handler(MessageHandler(self._on_premium_wrapper, filters.command(["premium", "prem", "plan"])))
+        app.add_handler(MessageHandler(self._on_userinfo_wrapper, filters.command(["userinfo", "user_info", "info", "myinfo", "me", "profile"])))
+        app.add_handler(MessageHandler(self._on_premium_wrapper, filters.command(["premium", "prem"])))
+        app.add_handler(MessageHandler(self._on_plans_wrapper, filters.command(["plans", "plan", "pricing", "buy", "upgrade"])))
+        app.add_handler(MessageHandler(self._on_admin_wrapper, filters.command(["admin", "panel", "adm"])))
         app.add_handler(MessageHandler(self._on_addpremium_wrapper, filters.command(["addpremium", "add_premium", "setpremium", "set_premium", "give_premium", "givepremium"])))
         app.add_handler(MessageHandler(self._on_removepremium_wrapper, filters.command(["removepremium", "remove_premium", "delpremium", "del_premium", "unpremium", "revoke_premium", "remove_prem", "del_prem"])))
         app.add_handler(MessageHandler(self._on_premiummode_wrapper, filters.command(["premiummode", "premium_mode", "setmode", "setpremiummode", "togglemode"])))
@@ -157,15 +181,14 @@ class CommandsBinder:
         app.add_handler(MessageHandler(self._on_broadcast_wrapper, filters.command(["broadcast", "bc"])))
         app.add_handler(MessageHandler(self._on_logs_wrapper, filters.command(["logs", "log"])))
 
-        # Direct text message handler (for private chats without slash commands)
+        # Direct text handler
         app.add_handler(MessageHandler(self._on_direct_message_wrapper, filters.text & filters.private & ~filters.regex(r"^/")))
 
-        # CallbackQuery handler (single)
+        # CallbackQuery handler
         app.add_handler(CallbackQueryHandler(self._on_callback_wrapper))
 
         logger.info("Command handlers registered on Client.")
 
-    # thin wrappers to match handler signature
     async def _on_start_wrapper(self, client: Client, message: Message):
         await self.start_command(client, message)
 
@@ -189,6 +212,12 @@ class CommandsBinder:
 
     async def _on_premium_wrapper(self, client: Client, message: Message):
         await self.premium_command(client, message)
+
+    async def _on_plans_wrapper(self, client: Client, message: Message):
+        await self.plans_command(client, message)
+
+    async def _on_admin_wrapper(self, client: Client, message: Message):
+        await self.admin_command(client, message)
 
     async def _on_addpremium_wrapper(self, client: Client, message: Message):
         await self.add_premium_command(client, message)
@@ -225,7 +254,7 @@ class CommandsBinder:
         first_name = getattr(message.from_user, "first_name", "there") or "there"
         username = getattr(message.from_user, "username", None)
 
-        # retrieve and update user record
+        # Retrieve and update user record
         rec = db.get_user(user_id) or {}
         user_updates = {}
         if rec.get("display_name") != first_name:
@@ -239,7 +268,6 @@ class CommandsBinder:
             except Exception:
                 pass
 
-        # log new user asynchronously
         try:
             await self.logger.log_new_user(user_id, username, first_name)
         except Exception:
@@ -247,49 +275,42 @@ class CommandsBinder:
 
         prem_mode = db.get_premium_mode()
         is_premium = db.is_premium(user_id)
+        start_kb = _build_start_keyboard(user_id)
+
         if not prem_mode:
             welcome_text = (
-                f"👋 Hello {first_name}!\n\n"
-                f"Welcome to **SpotiVerse Bot**!\n\n"
+                f"👋 Hello **{first_name}**!\n\n"
+                "Welcome to **SpotiVerse Bot** — High-Performance Music Downloader!\n\n"
                 "I can search and download high-quality audio from:\n"
-                "• Spotify\n• JioSaavn\n• YouTube\n\n"
+                "• **Spotify** • **YouTube** • **JioSaavn** • **SoundCloud** • **Deezer**\n\n"
                 "**Your Status:** ✨ All Features Unlocked (Public Mode)\n"
                 "**Downloads:** Unlimited ♾️ (No daily limit)\n\n"
-                "🎉 All features (unlimited downloads, albums/playlists, high quality audio) are currently **FREE for everyone**!"
+                "Enjoy your music downloads!"
             )
         else:
             welcome_text = (
-                f"👋 Hello {first_name}!\n\n"
-                f"Welcome to **SpotiVerse Bot**!\n\n"
-                "I can search and download high-quality audio from:\n"
-                "• Spotify\n• JioSaavn\n• YouTube\n\n"
-                f"**Your Status:** {'💎 Premium User' if is_premium else '👤 Free User'}\n"
+                f"👋 Hello **{first_name}**!\n\n"
+                "Welcome to **SpotiVerse Bot** — Studio-Grade Music Downloader!\n\n"
+                "Supported platforms:\n"
+                "• **Spotify** • **YouTube** • **JioSaavn** • **SoundCloud** • **Deezer**\n\n"
+                f"**Membership:** `{'👑 Premium Member' if is_premium else '👤 Free Member'}`\n"
             )
             if is_premium:
-                if rec.get("premium_until"):
-                    try:
-                        tu = rec.get("premium_until")
-                        if isinstance(tu, datetime):
-                            welcome_text += f"**Premium Until:** {tu.strftime('%Y-%m-%d')}\n"
-                        else:
-                            welcome_text += f"**Premium Until:** {str(tu)}\n"
-                    except Exception:
-                        pass
-                welcome_text += "**Downloads:** Unlimited ♾️ (No daily limit)\n\nEnjoy your unlimited high-quality downloads!"
+                until_dt = _parse_datetime(rec.get("premium_until"))
+                rem_str = _format_time_remaining(until_dt) if not rec.get("lifetime_premium") else "Lifetime Access ♾️"
+                welcome_text += f"**Validity:** `{rem_str}`\n**Downloads:** Unlimited ♾️ (Priority Queue Active)\n\nReady to download your favorite songs & albums!"
             else:
                 welcome_text += (
-                    f"**Free Limit:** {rec.get('downloads_today', 0)}/{Config.FREE_USER_DAILY_LIMIT} downloads today\n"
-                    "🔍 Search & download songs using `/search <song name>`\n\n"
-                    "💎 Upgrade to Premium for unlimited downloads and album/playlist support!\n"
-                    "Contact: @icecube9608\n\n"
-                    f"👤 **Your User ID:** `{user_id}`"
+                    f"**Daily Limit:** `{rec.get('downloads_today', 0)}/{Config.FREE_USER_DAILY_LIMIT}` downloads used today\n\n"
+                    "🔍 Search & download tracks with `/search <song name>`\n"
+                    "👑 Upgrade to Premium for **Unlimited Downloads**, **FLAC Audio**, and **Full Playlist Support**!"
                 )
 
         try:
-            await message.reply_text(welcome_text, reply_markup=_build_start_keyboard())
+            await message.reply_text(welcome_text, reply_markup=start_kb)
         except Exception:
             try:
-                await message.edit_text(welcome_text, reply_markup=_build_start_keyboard())
+                await message.edit_text(welcome_text, reply_markup=start_kb)
             except Exception as e:
                 logger.warning(f"Failed to deliver welcome message: {e}")
 
@@ -300,22 +321,26 @@ class CommandsBinder:
         username = getattr(message.from_user, "username", None)
         first_name = getattr(message.from_user, "first_name", "there") or "there"
 
-        # Save user info in DB
         try:
             db.update_user(user_id, {"username": username, "first_name": first_name, "display_name": first_name})
         except Exception:
             pass
 
+        # Check banned state
+        if db.is_banned(user_id):
+            await message.reply_text("🚫 **Account Suspended.** You have been restricted from using this service.")
+            return
+
         parts = _get_command_parts(message)
         if len(parts) < 2:
-            await message.reply_text("Usage: /search <query>\nExample: `/search blinding lights`")
+            await message.reply_text("Usage: `/search <song name>`\nExample: `/search blinding lights`")
             return
         query = " ".join(parts[1:]).strip()
         loading_msg = await message.reply_text(f"🔎 Searching for: **{query}** ...")
         try:
             tracks = await self.search_handler.search_all(query, limit=10)
             if not tracks:
-                await loading_msg.edit_text("❌ No results found.")
+                await loading_msg.edit_text("❌ No results found. Try another search query.")
                 return
 
             try:
@@ -333,11 +358,6 @@ class CommandsBinder:
                 await loading_msg.edit_text(f"🔎 Results for: **{query}**\n\nSelect a track to download:", reply_markup=InlineKeyboardMarkup(kb_rows))
         except Exception as e:
             logger.error(f"Search failed: {e}", exc_info=True)
-            try:
-                uid = message.from_user.id if message.from_user else "unknown"
-                await self.logger.log_to_channel(f"Search error for user {uid}: {e}")
-            except Exception:
-                pass
             await loading_msg.edit_text(f"❌ Search failed: {e}")
 
     async def help_command(self, client: Client, message: Message):
@@ -345,25 +365,27 @@ class CommandsBinder:
         help_text = (
             "🤖 **SpotiVerse Bot Commands**\n\n"
             "**Music Commands:**\n"
-            "• `/search <query>` - Search for music\n"
-            f"• `/download <url>` - Download songs/albums {'(Free for All)' if not prem_mode else '(Premium Only)'}\n\n"
+            "• `/search <query>` - Search songs across all platforms\n"
+            "• `/download <url>` - Download song, album, or playlist\n"
+            "• `/plans` - View available Premium subscription plans\n\n"
             "**User Commands:**\n"
-            "• `/start` - Start the bot\n"
-            "• `/help` - Show this help message\n"
-            "• `/userinfo` - Show your user information\n"
-            "• `/premium` - Show premium plans & status\n"
-            f"• `/settings` - Configure audio format/quality {'(Free for All)' if not prem_mode else '(Premium only)'}\n\n"
+            "• `/start` - Start bot & open main menu\n"
+            "• `/help` - Show this help manual\n"
+            "• `/userinfo` - Check membership & daily usage\n"
+            "• `/premium` - View your active subscription status\n"
+            f"• `/settings` - Audio format & quality settings {'(Free for All)' if not prem_mode else '(Premium only)'}\n\n"
         )
         if Config.is_authorized(message):
             help_text += (
-                "**Admin Commands:**\n"
-                "• `/premiummode <true|false>` - Toggle Premium Mode on/off\n"
-                "• `/addpremium <user_id> [days]` - Grant premium to user\n"
-                "• `/removepremium <user_id>` - Remove premium from user\n"
-                "• `/stats` - View bot statistics\n"
-                "• `/users` - View user counts\n"
-                "• `/broadcast <msg>` - Send broadcast message\n"
-                "• `/logs` - Get bot log file\n\n"
+                "**Admin & Owner Commands:**\n"
+                "• `/admin` - Open Centralized Admin Panel\n"
+                "• `/premiummode <true|false>` - Global Premium switch\n"
+                "• `/addpremium <user_id> [duration]` - Grant premium to user\n"
+                "• `/removepremium <user_id>` - Revoke premium from user\n"
+                "• `/stats` - View real-time analytics & platform metrics\n"
+                "• `/users` - User count breakdown\n"
+                "• `/broadcast <msg>` - Send announcement to users\n"
+                "• `/logs` - Export bot logs\n\n"
             )
         help_text += "Need support? Contact @icecube9608"
         await message.reply_text(help_text)
@@ -373,351 +395,25 @@ class CommandsBinder:
             return
         user_id = message.from_user.id
         if not db.is_premium(user_id):
-            await message.reply_text("❌ Settings are available to Premium users only.\n\nUpgrade to premium to access advanced settings and higher quality downloads.")
+            await message.reply_text(
+                "❌ **Settings are available to Premium users only.**\n\n"
+                "Upgrade to Premium to configure lossless FLAC, 320kbps MP3, and priority routing.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💎 View Premium Plans", callback_data="view_plans")]])
+            )
             return
         rec = db.get_user(user_id) or {}
         await message.reply_text("⚙️ **Settings**\n\nConfigure your download preferences:", reply_markup=_settings_keyboard_for(rec))
 
-    async def handle_callback(self, client: Client, callback_query: CallbackQuery):
-        """
-        Unified callback handler for inline buttons.
-        Handles:
-        - premium_info / premium_*
-        - back / main_menu
-        - menu_download (open download prompt)
-        - menu_settings (open settings or show message)
-        - setting_* (format/quality toggles)
-        - download_{provider}_{id}
-        - broadcast_confirm / cancel
-        """
-        data = (callback_query.data or "").strip()
-        if not callback_query.from_user:
-            await safe_answer_callback(callback_query, text="User not found")
-            return
-        user_id = callback_query.from_user.id
-        from_user = callback_query.from_user
-        username = getattr(from_user, "username", None)
-        first_name = getattr(from_user, "first_name", "there") or "there"
-
-        # Update user profile in DB
-        try:
-            updates = {"first_name": first_name, "display_name": first_name}
-            if username:
-                updates["username"] = username
-            db.update_user(user_id, updates)
-        except Exception:
-            pass
-
-        # Quick ACK to stop the spinner
-        await safe_answer_callback(callback_query)
-
-        # --- 1) Premium info flow ---
-        if data == "premium_info" or data.startswith("premium_"):
-            try:
-                # Fetch user record
-                rec = db.get_user(user_id) or {}
-                prem_mode = db.get_premium_mode()
-
-                if not prem_mode:
-                    premium_text = (
-                        "🎉 **All Features Unlocked! (Public Mode)**\n\n"
-                        "• **Unlimited downloads** - No daily limits for anyone\n"
-                        "• **Advanced search** - Search Spotify, JioSaavn & YouTube\n"
-                        "• **High quality audio** - FLAC and 320kbps MP3 settings\n"
-                        "• **Batch downloads** - Albums, playlists & artist tracks\n\n"
-                        "All bot features are currently **FREE** for everyone to enjoy! 🚀"
-                    )
-                else:
-                    premium_text = (
-                        "💎 **Premium Features**\n\n"
-                        "• **Unlimited downloads** - No daily limits\n"
-                        "• **Advanced search** - Search across multiple platforms\n"
-                        "• **High quality audio** - FLAC and high-bitrate MP3\n"
-                        "• **Batch downloads** - Download albums and playlists\n"
-                        "• **Priority support** - Faster response times\n\n"
-                    )
-
-                    if db.is_premium(user_id):
-                        tu = rec.get("premium_until")
-                        try:
-                            if tu:
-                                premium_text += f"**Your premium is active until:** {tu.strftime('%Y-%m-%d')}\n\n"
-                            else:
-                                premium_text += "**Your premium is active:** Lifetime / Unlimited ♾️\n\n"
-                        except Exception:
-                            premium_text += f"**Your premium is active until:** {str(tu)}\n\n"
-                    else:
-                        premium_text += (
-                            "**Free Account Limitations:**\n"
-                            f"• {Config.FREE_USER_DAILY_LIMIT} downloads per day\n"
-                            "**To upgrade to premium,** contact @icecube9608\n"
-                            f"**User ID**: `{user_id}`"
-                        )
-
-                await callback_query.message.edit_text(premium_text, reply_markup=_build_premium_markup())
-
-            except Exception:
-                # Fallback: send as new message if editing fails
-                try:
-                    await self.app.send_message(user_id, premium_text, reply_markup=_build_premium_markup())
-                except Exception as e:
-                    logger.warning(f"Failed to show premium info: {e}")
-
-            return
-
-
-        # --- 2) Back / Main menu ---
-        if data in ("back", "main_menu"):
-            try:
-                display_name = _display_name_from_callback(callback_query)
-                rec = db.get_user(user_id) or {}
-                prem_mode = db.get_premium_mode()
-                is_premium = db.is_premium(user_id)
-                if not prem_mode:
-                    text = (
-                        f"👋 Hello {display_name}!\n\n"
-                        "Welcome to **SpotiVerse Bot**!\n\n"
-                        "I can download high-quality audio from various platforms including:\n"
-                        "• Spotify\n"
-                        "• YouTube\n"
-                        "• JioSaavn\n\n"
-                        "**Your Status:** ✨ All Features Unlocked (Public Mode)\n"
-                        "**Downloads:** Unlimited ♾️ (No daily limit)\n\n"
-                        "🎉 All features (unlimited downloads, albums/playlists, high quality audio) are currently **FREE for everyone**!"
-                    )
-                else:
-                    text = (
-                        f"👋 Hello {display_name}!\n\n"
-                        "Welcome to **SpotiVerse Bot**!\n\n"
-                        "I can download high-quality audio from various platforms including:\n"
-                        "• Spotify\n"
-                        "• YouTube\n"
-                        "• JioSaavn\n\n"
-                        f"**Your Status:** {'💎 Premium User' if is_premium else '👤 Free User'}\n"
-                    )
-                    if is_premium:
-                        if rec.get("premium_until"):
-                            tu = rec.get("premium_until")
-                            try:
-                                text += f"**Premium Until:** {tu.strftime('%Y-%m-%d')}\n"
-                            except Exception:
-                                text += f"**Premium Until:** {str(tu)}\n"
-                        text += "**Downloads:** Unlimited ♾️ (No daily limit)\n\n"
-                    else:
-                        text += f"**Free Limits:** {rec.get('downloads_today', 0)}/{Config.FREE_USER_DAILY_LIMIT} downloads today\n\n💎 Upgrade to premium for unlimited downloads and album/playlist support!\n\n"
-                try:
-                    await callback_query.message.edit_text(text, reply_markup=_build_start_keyboard())
-                except Exception:
-                    await self.app.send_message(user_id, text, reply_markup=_build_start_keyboard())
-            except Exception as e:
-                logger.error(f"Error while handling back/main_menu callback: {e}", exc_info=True)
-            return
-
-        # --- 3) Start-menu: Download button ---
-        if data == "menu_download":
-            try:
-                text = (
-                    "🔎 **Search & Download Music**\n\n"
-                    "Send me a song name or Spotify/YouTube/JioSaavn link to search & download.\n\n"
-                    "Examples:\n"
-                    "• `/search blinding lights`\n"
-                    "• `faded alan walker`\n"
-                    "• `https://open.spotify.com/track/...`"
-                )
-                kb = [[InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]]
-                try:
-                    await callback_query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(kb))
-                except Exception:
-                    await self.app.send_message(user_id, text, reply_markup=InlineKeyboardMarkup(kb))
-            except Exception as e:
-                logger.error(f"Error handling menu_download: {e}", exc_info=True)
-            return
-
-        # --- 4) Start-menu: Settings button ---
-        if data == "menu_settings":
-            try:
-                # Check if premium using db.is_premium
-                if not db.is_premium(user_id):
-                    try:
-                        await callback_query.answer("⚠️ Settings are available to Premium users only.", show_alert=True)
-                    except Exception:
-                        pass
-                    txt = "⚙️ Settings are available for Premium users only.\nUpgrade to access higher quality and more options."
-                    kb = [[InlineKeyboardButton("💎 Premium Info", callback_data="premium_info")], [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]]
-                    try:
-                        await callback_query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb))
-                    except Exception:
-                        try:
-                            await self.app.send_message(user_id, txt, reply_markup=InlineKeyboardMarkup(kb))
-                        except Exception:
-                            pass
-                    return
-                # premium users -> show settings UI
-                rec = db.get_user(user_id) or {}
-                try:
-                    await callback_query.message.edit_text("⚙️ **Settings**\n\nConfigure your download preferences:", reply_markup=_settings_keyboard_for(rec))
-                except Exception:
-                    try:
-                        await self.app.send_message(user_id, "⚙️ **Settings**\n\nConfigure your download preferences:", reply_markup=_settings_keyboard_for(rec))
-                    except Exception as e:
-                        logger.warning(f"Failed to show settings: {e}")
-            except Exception as e:
-                logger.error(f"Error handling menu_settings: {e}", exc_info=True)
-            return
-
-        # --- 5) Settings toggles (existing code routes) ---
-        if data.startswith("setting_"):
-            await self._handle_settings_callback(callback_query)
-            return
-
-        # --- 6) Download action from search listing ---
-        if data.startswith("download_"):
-            parts = data.split("_", 2)
-            if len(parts) >= 3:
-                provider = parts[1]
-                tid = parts[2]
-                try:
-                    # Create a new progress message
-                    try:
-                        msg = await callback_query.message.reply_text("🔄 Processing your download...")
-                        success = await self.download_handler.download_track(provider, tid, user_id, msg)
-                        if not success:
-                            pass
-                    except Exception as msg_e:
-                        logger.error(f"Failed to create progress message: {msg_e}")
-                        try:
-                            await callback_query.answer("Failed to start download.", show_alert=True)
-                        except Exception:
-                            pass
-                except Exception as e:
-                    logger.error(f"Failed starting download via callback: {e}", exc_info=True)
-                    try:
-                        await callback_query.answer("Failed to start download.", show_alert=True)
-                    except Exception:
-                        pass
-            else:
-                try:
-                    await callback_query.answer("Invalid download callback", show_alert=True)
-                except Exception:
-                    pass
-            return
-
-        # --- 7) Broadcast confirm/cancel (admin) ---
-        if data in ("broadcast_confirm", "broadcast_cancel"):
-            await self._handle_broadcast_callback(callback_query)
-            return
-
-        # --- 8) Clear logs (admin) ---
-        if data == "clear_logs":
-            if not Config.is_authorized_callback(callback_query):
-                await safe_answer_callback(callback_query, text="❌ Owner only", show_alert=True)
-                return
-            log_path = os.path.join(os.getcwd(), "bot.log")
-            try:
-                if os.path.exists(log_path):
-                    with open(log_path, "w", encoding="utf-8") as f:
-                        f.write("")
-                await callback_query.message.edit_text("🗑️ **Bot logs have been cleared successfully.**")
-                await safe_answer_callback(callback_query, text="Logs cleared")
-            except Exception as e:
-                await safe_answer_callback(callback_query, text=f"Error: {e}", show_alert=True)
-            return
-
-        # --- 9) Search cancel / pagination ---
-        if data == "cancel_search":
-            try:
-                await callback_query.message.delete()
-            except Exception:
-                try:
-                    await callback_query.message.edit_text("❌ Search cancelled.")
-                except Exception:
-                    pass
-            await safe_answer_callback(callback_query, text="Search cancelled")
-            return
-
-        if data.startswith("search_page_"):
-            await safe_answer_callback(callback_query)
-            return
-
-        # Unknown callback (log quietly)
-        logger.debug(f"Unhandled callback data: {data}")
-
-
-    async def _handle_settings_callback(self, callback_query: CallbackQuery):
-        data = callback_query.data or ""
-        if not callback_query.from_user:
-            return
-        user_id = callback_query.from_user.id
-        rec = db.get_user(user_id) or {}
-
-        if not db.is_premium(user_id):
-            try:
-                await callback_query.answer("❌ Settings are for Premium users only.", show_alert=True)
-            except Exception:
-                pass
-            return
-
-        if data == "setting_format":
-            new_format = "flac" if rec.get("preferred_format") == "mp3" else "mp3"
-            db.update_user(user_id, {"preferred_format": new_format})
-            if new_format == "mp3":
-                db.update_user(user_id, {"preferred_quality": 320})
-            else:
-                db.update_user(user_id, {"preferred_quality": "high"})
-            try:
-                await callback_query.answer(f"Format set to {new_format.upper()}")
-            except Exception:
-                pass
-            await callback_query.message.edit_text("⚙️ **Settings**\n\nConfigure your download preferences:", reply_markup=_settings_keyboard_for(db.get_user(user_id)))
-            return
-
-        if data == "setting_quality":
-            current_format = rec.get("preferred_format", "mp3")
-            current_quality = rec.get("preferred_quality", 320)
-            if current_format == "mp3":
-                qualities = [64, 128, 192, 256, 320]
-                cur = current_quality if isinstance(current_quality, int) else 320
-                new_q = qualities[(qualities.index(cur) + 1) % len(qualities)] if cur in qualities else qualities[-1]
-            else:
-                qualities = ["low", "medium", "high"]
-                cur = str(current_quality)
-                new_q = qualities[(qualities.index(cur) + 1) % len(qualities)] if cur in qualities else qualities[-1]
-            db.update_user(user_id, {"preferred_quality": new_q})
-            try:
-                await callback_query.answer(f"Quality set to {new_q}")
-            except Exception:
-                pass
-            # build the new text and keyboard
-            new_text = "⚙️ **Settings**\n\nConfigure your download preferences:"
-            new_markup = _settings_keyboard_for(db.get_user(user_id))
-
-            try:
-                await callback_query.message.edit_text(new_text, reply_markup=new_markup)
-                # answer callback to close spinner / show nothing
-                try:
-                    await callback_query.answer()
-                except Exception as e:
-                    logger.debug(f"Could not answer callback after edit: {e}")
-            except MessageNotModified:
-                # Message already has the same content/keyboard — just answer the callback to stop spinner
-                try:
-                    await callback_query.answer()
-                except Exception as e:
-                    logger.debug(f"MessageNotModified and could not answer callback: {e}")
-            except Exception as e:
-                # Any other error should be logged, but don't crash the handler
-                logger.warning(f"Failed to edit settings message: {e}")
-                try:
-                    await callback_query.answer("An error occurred")
-                except Exception:
-                    pass
-
-            return
-
     async def direct_message_handler(self, client: Client, message: Message):
-        """Handle plain text or direct links in private messages without /search or /download command."""
+        """Handle text messages or links in private chats without command prefixes."""
         if not message or not message.from_user:
             return
+
+        # Check if admin is currently entering interactive text
+        handled = await self.admin_panel.handle_admin_text_input(client, message)
+        if handled:
+            return
+
         text = (message.text or "").strip()
         if not text:
             return
@@ -730,131 +426,90 @@ class CommandsBinder:
             await self.search_command(client, message)
 
     async def download_command(self, client: Client, message: Message):
-        """Handle /download command (supports single track and album/playlist - Premium Only)"""
+        """Handle /download command with centralized authorization pipeline."""
         if not message.from_user:
             return
         user_id = message.from_user.id
         username = getattr(message.from_user, "username", None)
         first_name = getattr(message.from_user, "first_name", "there") or "there"
 
-        # Update user profile in DB
         try:
             db.update_user(user_id, {"username": username, "first_name": first_name, "display_name": first_name})
         except Exception:
             pass
 
-        # Enforce Premium Only for downloads
-        if not db.is_premium(user_id):
-            await message.reply_text(
-                f"❌ **Premium Required!**\n\n"
-                f"📥 Downloads are available for **Premium users only**.\n\n"
-                f"💡 Free users can search for any song using `/search <song name>`!\n\n"
-                f"💎 Upgrade to Premium to unlock unlimited high-quality downloads & album support!\n"
-                f"Contact: @icecube9608\n\n"
-                f"👤 **Your User ID:** `{user_id}`"
-            )
-            return
-
-        # basic validation
         parts = _get_command_parts(message)
         if len(parts) < 2:
             await message.reply_text(
-                "Please provide a URL.\nUsage: /download link/album/playlist\n\nExample: `/download https://open.spotify.com/track/...`"
-            )
-            return
-        url = parts[1].strip()
-        if not url.startswith(('http://', 'https://', 'spotify:')):
-            await message.reply_text(
-                "❌ Please provide a valid URL starting with http:// or https://"
+                "Please provide a music URL.\nUsage: `/download <link>`\n\nExample: `/download https://open.spotify.com/track/...`"
             )
             return
 
-        # helper: parse provider and id
-        def parse_provider_and_id(u: str):
-            # spotify (track, album, playlist, artist - with optional /intl-xx/ prefix)
+        url = parts[1].strip()
+        if not url.startswith(('http://', 'https://', 'spotify:')):
+            await message.reply_text("❌ Please provide a valid URL starting with `http://`, `https://`, or `spotify:`")
+            return
+
+        # Parse provider and content type
+        def _parse_url(u: str):
+            # Spotify
             m = re.search(r"open\.spotify\.com/(?:intl-[^/]+/)?(track|album|playlist|artist)/([A-Za-z0-9]+)", u)
             if m:
                 return "spotify", m.group(1), m.group(2)
-            # spotify URI format
             m = re.search(r"spotify:(track|album|playlist|artist):([A-Za-z0-9]+)", u)
             if m:
                 return "spotify", m.group(1), m.group(2)
-            # youtube: watch?v= or youtu.be or shorts/ or playlist
+            # YouTube
             if "list=" in u:
                 return "youtube", "playlist", u
             m = re.search(r"(?:v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{6,})", u)
             if m:
-                return "youtube", "video", m.group(1)
-            # deezer album/track/playlist
+                return "youtube", "track", m.group(1)
+            # Deezer
             m = re.search(r"deezer\.com/(track|album|playlist)/([0-9]+)", u)
             if m:
                 return "deezer", m.group(1), m.group(2)
-            # soundcloud - we treat as track or set (set=playlist)
+            # SoundCloud
             if "soundcloud.com" in u:
                 if "/sets/" in u:
                     return "soundcloud", "playlist", u
                 return "soundcloud", "track", u
-            # jiosaavn (song/album/playlist) - use rough detection
+            # JioSaavn
             if "jiosaavn.com" in u or "saavn" in u:
                 if "/album/" in u or "/playlist/" in u:
                     return "jiosaavn", "album", u
                 return "jiosaavn", "track", u
-            # fallback
             return None, None, None
 
-        provider, kind, tid = parse_provider_and_id(url)
+        provider, kind, tid = _parse_url(url)
         if not provider:
-            await message.reply_text(
-                "❌ Could not detect provider or ID from the URL. Supported: Spotify, YouTube, Deezer, SoundCloud, JioSaavn."
-            )
+            await message.reply_text("❌ Could not detect provider from URL. Supported: Spotify, YouTube, JioSaavn, SoundCloud, Deezer.")
             return
 
-        # Determine if this request is album/playlist (i.e., multi-track)
-        is_collection = kind in ("album", "playlist", "set", "artist")
+        is_collection = kind in ("album", "playlist", "artist", "set")
 
-        # Create a progress message
-        try:
-            progress_msg = await message.reply_text("🚀 Starting download...")
-        except Exception as e:
-            logger.error(f"Failed to create progress message: {e}")
-            progress_msg = None
+        # Run centralized authorization pipeline
+        auth = FeatureGate.authorize_download(user_id, provider=provider, is_batch=is_collection)
+        if not auth.allowed:
+            await message.reply_text(auth.reason)
+            return
+
+        # Proceed with download
+        progress_msg = await message.reply_text("🚀 Starting download processing...")
 
         try:
             if is_collection:
-                # Download album/playlist
-                if hasattr(self.download_handler, "download_album"):
-                    success = await self.download_handler.download_album(
-                        provider, url, user_id, progress_msg or message
-                    )
-                    if not success:
-                        await self.download_handler.safe_edit_message(
-                            progress_msg or message,
-                            "❌ Failed to download album/playlist. Some tracks may have failed."
-                        )
-                else:
-                    await self.download_handler.safe_edit_message(
-                        progress_msg or message,
-                        "❌ Album/playlist downloads are not supported in this version."
-                    )
+                success = await self.download_handler.download_album(provider, url, user_id, progress_msg or message)
+                if not success and progress_msg:
+                    await self.download_handler.safe_edit_message(progress_msg, "❌ Failed to download album/playlist.")
             else:
-                # Single track download
-                if progress_msg:
-                    await self.download_handler.safe_edit_message(progress_msg, "⬇️ Downloading track...")
-                
-                # Call the download handler
-                success = await self.download_handler.download_track(
-                    provider, tid, user_id, progress_msg or message
-                )
-                
+                success = await self.download_handler.download_track(provider, tid, user_id, progress_msg or message)
                 if not success and progress_msg:
                     await self.download_handler.safe_edit_message(progress_msg, "❌ Failed to download track.")
-                    
         except Exception as e:
-            logger.error(f"Failed starting download for {user_id} url={url}: {e}", exc_info=True)
-            try:
-                await self.download_handler.safe_edit_message(progress_msg or message, f"❌ Download failed: {str(e)}")
-            except Exception:
-                pass
+            logger.error(f"Download execution error: {e}", exc_info=True)
+            if progress_msg:
+                await self.download_handler.safe_edit_message(progress_msg, f"❌ Download failed: {e}")
 
     async def userinfo_command(self, client: Client, message: Message):
         user_id = message.from_user.id if message.from_user else None
@@ -895,9 +550,9 @@ class CommandsBinder:
             f"**Premium Status:** {status_display}\n"
         )
         if prem_mode and user.get('premium') and user.get('premium_until'):
-            tu = user['premium_until']
+            tu = _parse_datetime(user['premium_until'])
             try:
-                info_text += f"**Premium Until:** {tu.strftime('%Y-%m-%d %H:%M UTC')}\n"
+                info_text += f"**Premium Until:** {tu.strftime('%Y-%m-%d %H:%M UTC') if tu else 'N/A'}\n"
             except Exception:
                 info_text += f"**Premium Until:** {str(tu)}\n"
         elif is_prem:
@@ -908,14 +563,23 @@ class CommandsBinder:
         else:
             info_text += f"**Downloads Today:** {user.get('downloads_today', 0)}/{Config.FREE_USER_DAILY_LIMIT}\n"
 
+        join_d = user.get('join_date')
+        if isinstance(join_d, datetime):
+            join_str = join_d.strftime('%Y-%m-%d')
+        else:
+            join_str = str(join_d) if join_d else 'Unknown'
+
         info_text += (
             f"**Total Downloads:** {user.get('total_downloads', 0)}\n"
             f"**Preferred Format:** {user.get('preferred_format', 'mp3')}\n"
             f"**Preferred Quality:** {user.get('preferred_quality', 64)}\n"
-            f"**Join Date:** {user.get('join_date', 'Unknown') if not isinstance(user.get('join_date'), datetime) else user.get('join_date').strftime('%Y-%m-%d')}\n"
+            f"**Join Date:** {join_str}\n"
         )
         await message.reply_text(info_text)
 
+    # -------------------------
+    # Premium Screens & Plans
+    # -------------------------
     async def premium_command(self, client: Client, message: Message):
         if not message.from_user:
             return
@@ -927,56 +591,163 @@ class CommandsBinder:
                 return
 
         user_id = message.from_user.id
-        rec = db.get_user(user_id) or {}
-        prem_mode = db.get_premium_mode()
+        await self.show_user_premium_screen(message, user_id)
+
+    async def plans_command(self, client: Client, message: Message):
+        if not message.from_user:
+            return
+        await self.show_premium_plans_screen(message)
+
+    async def show_user_premium_screen(self, message_or_cb, user_id: int):
+        """Displays Premium Member Card or Free Member Card based on status (Phase 12)."""
+        user = db.get_user(user_id) or {}
         is_prem = db.is_premium(user_id)
+        prem_mode = db.get_premium_mode()
+        name = user.get("first_name") or user.get("display_name") or "Music Lover"
 
         if not prem_mode:
-            premium_text = (
-                "🎉 **All Features Unlocked! (Public Mode Active)**\n\n"
-                "• **Unlimited Downloads** - No daily limits for any user\n"
-                "• **Batch Downloads** - Download complete albums & playlists\n"
-                "• **High Quality Audio** - FLAC & 320kbps MP3 settings\n"
-                "• **Custom Format Settings** - Configure format & bitrate in `/settings`\n"
-                "• **Direct Link Downloads** - Send any Spotify or YouTube link directly\n\n"
-                "All premium features are currently **100% FREE for all users**! 🚀"
+            text = (
+                f"🎉 **All Features Unlocked! (Public Mode)**\n\n"
+                f"Hello {name}!\n"
+                "All SpotiVerse premium features are currently **FREE** for everyone:\n\n"
+                "✓ Unlimited song downloads\n"
+                "✓ 320kbps MP3 & Lossless FLAC\n"
+                "✓ All enabled platforms (Spotify, YouTube, JioSaavn, SoundCloud, Deezer)\n"
+                "✓ Full album & playlist batch downloads\n"
+                "✓ No daily quotas or limits"
             )
-            await message.reply_text(premium_text)
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]])
+        elif is_prem:
+            until_dt = _parse_datetime(user.get("premium_until"))
+            is_lifetime = bool(user.get("lifetime_premium"))
+            if is_lifetime:
+                valid_str = "Lifetime (Permanent Access ♾️)"
+            else:
+                valid_str = f"{until_dt.strftime('%Y-%m-%d %H:%M UTC') if until_dt else 'Active'} ({_format_time_remaining(until_dt)})"
+
+            plan_name = user.get("premium_plan") or ("Lifetime" if is_lifetime else "Premium Plan")
+
+            text = (
+                "👑 **Premium Member**\n\n"
+                f"**Name:** {name}\n"
+                f"**Telegram ID:** `{user_id}`\n"
+                "**Membership:** Premium\n"
+                f"**Plan:** {plan_name}\n"
+                f"**Valid Until:** {valid_str}\n\n"
+                "**Your Premium Benefits:**\n"
+                "✓ Unlimited song downloads\n"
+                "✓ Studio-grade MP3 (320kbps) & Lossless FLAC\n"
+                "✓ All enabled platforms (Spotify, YouTube, JioSaavn, SoundCloud, Deezer)\n"
+                "✓ Full album & playlist batch downloads\n"
+                "✓ Priority queue processing\n"
+                "✓ Zero daily limits or wait times"
+            )
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💎 Extend / Change Plan", callback_data="view_plans")],
+                [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]
+            ])
+        else:
+            # Free user or expired
+            until_dt = _parse_datetime(user.get("premium_until"))
+            is_expired = until_dt and until_dt < datetime.now(timezone.utc).replace(tzinfo=None)
+
+            if is_expired:
+                header = "⚠️ **Premium Expired**\n\nYour premium subscription has expired. Renew to restore unlimited downloads and lossless audio!"
+            else:
+                header = "👤 **Free Member**"
+
+            text = (
+                f"{header}\n\n"
+                f"**Name:** {name}\n"
+                f"**Telegram ID:** `{user_id}`\n"
+                "**Membership:** Free Tier\n"
+                f"**Daily Limit:** {Config.FREE_USER_DAILY_LIMIT} downloads/day\n"
+                f"**Used Today:** {user.get('downloads_today', 0)}/{Config.FREE_USER_DAILY_LIMIT}\n\n"
+                "**Upgrade to Premium to Unlock:**\n"
+                "✓ Unlimited downloads with no daily limits\n"
+                "✓ Lossless FLAC & 320kbps MP3 audio\n"
+                "✓ Full album & playlist batch downloads\n"
+                "✓ High-speed priority queue\n"
+                "✓ All music platforms enabled"
+            )
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💎 View Premium Plans", callback_data="view_plans")],
+                [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]
+            ])
+
+        await safe_edit_or_reply(message_or_cb, text, reply_markup=kb, client=self.app)
+
+    async def show_premium_plans_screen(self, message_or_cb):
+        """Displays Premium Plans UI matching Phase 11 specifications."""
+        plans = get_premium_plans()
+        text = (
+            "👑 **Premium Plans**\n"
+            "Get more features, higher limits and lossless audio quality.\n\n"
+            "**Available Plans:**\n"
+        )
+        plan_buttons = []
+        for p in plans:
+            badge = f" ({p['badge']})" if p.get("badge") else ""
+            savings = f" — `{p['savings']}`" if p.get("savings") else ""
+            text += f"• **{p['name']}**: {p['symbol']}{p['price']}{savings}{badge}\n"
+            btn_label = f"Select {p['name']} — {p['symbol']}{p['price']}"
+            plan_buttons.append([InlineKeyboardButton(btn_label, callback_data=f"buy_plan_{p['id']}")])
+
+        text += (
+            "\n**Included Premium Benefits:**\n"
+            "✓ Unlimited downloads with no daily limit\n"
+            "✓ Studio-grade MP3 & Lossless FLAC quality\n"
+            "✓ All enabled platforms (Spotify, YouTube, JioSaavn, SoundCloud, Deezer)\n"
+            "✓ Batch album & playlist downloads\n"
+            "✓ High-speed priority download queue"
+        )
+
+        plan_buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="main_menu")])
+        kb = InlineKeyboardMarkup(plan_buttons)
+        await safe_edit_or_reply(message_or_cb, text, reply_markup=kb, client=self.app)
+
+    async def show_plan_checkout(self, callback_query: CallbackQuery, plan_id: str):
+        """Initiates plan purchase without granting fake instant premium."""
+        user_id = callback_query.from_user.id
+        order = await payment_manager.initiate_plan_purchase(user_id, plan_id)
+        if not order:
+            await safe_answer_callback(callback_query, text="Plan not found", show_alert=True)
             return
 
-        premium_text = (
-            "💎 **Premium Features**\n\n"
-            "• **Unlimited Downloads** - Download any track with no restrictions\n"
-            "• **Batch Downloads** - Download complete albums & playlists\n"
-            "• **High Quality Audio** - FLAC & 320kbps MP3\n"
-            "• **Custom Format Settings** - Configure quality and format\n"
-            "• **Priority Processing** - High-speed downloads\n\n"
+        upi_id = getattr(Config, "PAYMENT_UPI_ID", "icecube@upi")
+        text = (
+            f"💳 **Subscription Invoice: {order.plan_name}**\n\n"
+            f"• **Order ID:** `{order.order_id}`\n"
+            f"• **Plan:** {order.plan_name} ({order.duration})\n"
+            f"• **Amount:** ₹{order.amount}\n"
+            f"• **Status:** Pending Verification\n\n"
+            "**How to Complete Payment:**\n"
+            f"1. Pay **₹{order.amount}** via UPI to:\n"
+            f"   `{upi_id}` (Tap to copy)\n"
+            f"2. Add Note / Remarks: `SpotiVerse_{order.order_id}`\n"
+            "3. Send your payment screenshot or UTR number to @icecube9608 along with your Order ID.\n\n"
+            "⚡ _Your account will be upgraded immediately upon verification._"
         )
-        if is_prem:
-            if rec.get('premium_until'):
-                tu = rec.get('premium_until')
-                try:
-                    premium_text += f"**Your premium is active until:** {tu.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
-                except Exception:
-                    premium_text += f"**Your premium is active until:** {str(tu)}\n\n"
-            else:
-                premium_text += "**Your premium is active:** Unlimited / Lifetime ♾️\n\n"
-            premium_text += "Enjoy your unlimited downloads! 🎉"
-        else:
-            premium_text += (
-                "**Free vs Premium:**\n"
-                f"• 🔍 **Search & Downloads:** Free users get {Config.FREE_USER_DAILY_LIMIT} song downloads/day (`/search <query>`)\n"
-                "• 💎 **Premium:** Unlimited downloads, 320kbps/FLAC & album/playlist support\n\n"
-                "**To upgrade to premium,** contact @icecube9608\n"
-                f"**Your User ID**: `{user_id}`"
-            )
-        await message.reply_text(premium_text)
+        kb = [
+            [InlineKeyboardButton("⬅️ Back to Plans", callback_data="view_plans")],
+            [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+        ]
+        await safe_edit_or_reply(callback_query, text, reply_markup=InlineKeyboardMarkup(kb), client=self.app)
 
-    # ---- admin commands ----
+    # -------------------------
+    # Admin Panel Commands
+    # -------------------------
+    async def admin_command(self, client: Client, message: Message):
+        if not message.from_user:
+            return
+        user_id = message.from_user.id
+        if not Config.is_owner(user_id):
+            await message.reply_text("❌ You are not authorized to access the admin panel.")
+            return
+
+        await self.admin_panel.show_main_menu(message)
+
     def _parse_duration(self, raw_duration: str) -> tuple[float, str]:
-        """
-        Parse duration string (e.g. '30d', '12h', '1m', '1y', 'lifetime', '7') into (days_float, friendly_text).
-        """
         raw = raw_duration.strip().lower()
         if raw in ("lifetime", "perm", "permanent", "unlimited", "forever"):
             return 36500.0, "Lifetime"
@@ -1052,7 +823,8 @@ class CommandsBinder:
                 await message.reply_text(f"❌ {ve}")
                 return
 
-            premium_until = db.add_premium(user_id, days)
+            admin_id = message.from_user.id if message.from_user else 0
+            premium_until = db.add_premium(user_id, days, plan_name=friendly_duration, admin_id=admin_id)
             expiry_str = premium_until.strftime('%Y-%m-%d %H:%M UTC') if days < 36500 else "Permanent / Lifetime"
 
             try:
@@ -1064,7 +836,7 @@ class CommandsBinder:
                     f"Enjoy unlimited downloads and all premium features!"
                 )
             except Exception:
-                logger.debug(f"Could not send PM notification to user {user_id}")
+                pass
 
             duration_days_int = int(days) if days >= 1 else 1
             await self.logger.log_premium_change(user_id, "added", duration_days_int)
@@ -1110,7 +882,8 @@ class CommandsBinder:
                         await message.reply_text(f"❌ Could not find user `{user_raw}`: {e}")
                         return
 
-            db.remove_premium(user_id)
+            admin_id = message.from_user.id if message.from_user else 0
+            db.remove_premium(user_id, admin_id=admin_id)
 
             try:
                 await client.send_message(
@@ -1119,7 +892,7 @@ class CommandsBinder:
                     "You can still use the bot with free limitations."
                 )
             except Exception:
-                logger.debug(f"Could not notify user {user_id} about premium removal")
+                pass
 
             await self.logger.log_premium_change(user_id, "removed")
             await message.reply_text(f"✅ Premium access removed from user `{user_id}`.")
@@ -1128,12 +901,13 @@ class CommandsBinder:
             await message.reply_text(f"❌ Error: {e}")
 
     async def premiummode_command(self, client: Client, message: Message):
-        """Toggle or view global premium enforcement mode (owner/admin only)."""
         if not Config.is_authorized(message):
             await message.reply_text("❌ This command is for bot owner only.")
             return
 
         parts = _get_command_parts(message)
+        admin_id = message.from_user.id if message.from_user else 0
+
         if len(parts) < 2:
             current_mode = db.get_premium_mode()
             status_desc = "🔒 **ENABLED (Strict Mode)** — Premium features restricted to premium users only." if current_mode else "🔓 **DISABLED (Public Mode)** — All features UNLOCKED for EVERY user!"
@@ -1142,21 +916,21 @@ class CommandsBinder:
                 f"• Status: {status_desc}\n"
                 f"• Current value: `{current_mode}`\n\n"
                 f"**How to change:**\n"
-                f"• `/premiummode true` or `/premiummode on` (Enable strict premium requirements)\n"
-                f"• `/premiummode false` or `/premiummode off` (Unlock all features for everyone)"
+                f"• `/premiummode true` (Enable strict premium requirements)\n"
+                f"• `/premiummode false` (Unlock all features for everyone)"
             )
             return
 
         action = parts[1].strip().lower()
         if action in ("true", "on", "enable", "1", "yes", "t"):
-            db.set_premium_mode(True)
+            db.set_bot_setting("premium_system", True, admin_id=admin_id)
             await message.reply_text(
                 "🔒 **Premium Mode is now ENABLED (True)**\n\n"
-                "• Advanced features (unlimited downloads, direct `/download`, albums/playlists, `/settings`) are now restricted to **Premium Users** only.\n"
+                "• Advanced features are now restricted to **Premium Users** only.\n"
                 f"• Free users are subject to daily limits ({Config.FREE_USER_DAILY_LIMIT} downloads/day)."
             )
         elif action in ("false", "off", "disable", "0", "no", "f"):
-            db.set_premium_mode(False)
+            db.set_bot_setting("premium_system", False, admin_id=admin_id)
             await message.reply_text(
                 "🔓 **Premium Mode is now DISABLED (False)**\n\n"
                 "🎉 **All features are now UNLOCKED for ALL users!**\n"
@@ -1169,7 +943,6 @@ class CommandsBinder:
             await message.reply_text("❌ Invalid option. Use `/premiummode true` or `/premiummode false`.")
 
     async def logs_command(self, client, message: Message):
-        """Handle /logs command (owner only) — sends the latest log file or recent lines."""
         if not Config.is_authorized(message):
             await message.reply_text("❌ This command is for bot owner only.")
             return
@@ -1180,7 +953,6 @@ class CommandsBinder:
         try:
             if os.path.exists(log_path):
                 file_size = os.path.getsize(log_path)
-                # If log file is under 40MB, send directly
                 if file_size <= 40 * 1024 * 1024:
                     await message.reply_document(
                         document=log_path,
@@ -1188,7 +960,6 @@ class CommandsBinder:
                         reply_markup=clear_kb
                     )
                 else:
-                    # If larger, send the last 10,000 lines in a temp file
                     tail_path = "temp/bot_tail.log"
                     os.makedirs("temp", exist_ok=True)
                     with open(log_path, "r", encoding="utf-8", errors="ignore") as src:
@@ -1201,7 +972,7 @@ class CommandsBinder:
                         reply_markup=clear_kb
                     )
             else:
-                await message.reply_text("⚠️ Log file not found. Make sure logging is configured to write to `bot.log`.")
+                await message.reply_text("⚠️ Log file not found.")
         except Exception as e:
             logger.error(f"Error sending logs: {e}", exc_info=True)
             await message.reply_text(f"❌ Could not send logs: {e}")
@@ -1210,63 +981,27 @@ class CommandsBinder:
         if not Config.is_authorized(message):
             await message.reply_text("❌ This command is for bot owner only.")
             return
-        try:
-            stats = db.get_user_stats()
-            prem_mode = db.get_premium_mode()
-            mode_badge = "🔒 Strict (True)" if prem_mode else "🔓 Public / Free (False)"
-            stats_text = (
-                "📊 **Bot Statistics**\n\n"
-                f"**Premium Mode:** {mode_badge}\n"
-                f"**Total Users:** {stats['total_users']}\n"
-                f"**Premium Users:** {stats['premium_users']}\n"
-                f"**Free Users:** {stats['free_users']}\n"
-                f"**Active Today:** {stats['active_today']}\n"
-                f"**Total Downloads:** {stats['total_downloads']}\n\n"
-                "**Recent Activity:**\n"
-            )
-            if db.available:
-                recent_downloads = list(db.downloads.find().sort("timestamp", -1).limit(5))
-            else:
-                from utils.db import _fallback_store
-                recent_downloads = list(_fallback_store.get("downloads", []))[-5:]
-            for i, dl in enumerate(recent_downloads, 1):
-                t = dl.get("track_info", {})
-                stats_text += f"{i}. {t.get('title','Unknown')} - {t.get('artist','Unknown')}\n"
-            await message.reply_text(stats_text)
-        except Exception as e:
-            logger.error(f"Error in stats: {e}", exc_info=True)
-            await message.reply_text(f"Error: {e}")
+        await self.admin_panel.show_statistics(message, period="30d")
 
     async def users_command(self, client: Client, message: Message):
-        """Handle /users or /user command (owner only) — shows user counts and stats."""
         if not Config.is_authorized(message):
             await message.reply_text("❌ This command is for bot owner only.")
             return
 
         parts = _get_command_parts(message)
-        # If user passed a specific user ID: /user <user_id>, route to userinfo
         if len(parts) > 1 and parts[1].isdigit():
             await self.userinfo_command(client, message)
             return
 
         try:
-            stats = db.get_user_stats()
-            prem_mode = db.get_premium_mode()
-            mode_badge = "🔒 Strict (True)" if prem_mode else "🔓 Public / Free (False)"
-            total = stats["total_users"]
-            premium = stats["premium_users"]
-            free = stats["free_users"]
-            active = stats["active_today"]
-            downloads = stats["total_downloads"]
-
+            stats = db.get_statistics("30d")
             text = (
                 "👥 **SpotiVerse User Statistics**\n\n"
-                f"⚙️ **Premium Mode:** `{mode_badge}`\n"
-                f"👤 **Total Users:** `{total:,}`\n"
-                f"💎 **Premium Users:** `{premium:,}`\n"
-                f"🆓 **Free Users:** `{free:,}`\n"
-                f"⚡ **Active Today:** `{active:,}`\n"
-                f"📥 **Total Downloads:** `{downloads:,}`\n\n"
+                f"👤 **Total Users:** `{stats['total_users']:,}`\n"
+                f"💎 **Premium Users:** `{stats['premium_users']:,}`\n"
+                f"🆓 **Free Users:** `{stats['free_users']:,}`\n"
+                f"⚡ **Active Users (30d):** `{stats['active_users']:,}`\n"
+                f"📥 **Total Downloads:** `{stats['total_downloads']:,}`\n\n"
                 "💡 _Use `/userinfo <user_id>` to view details for a specific user._"
             )
             await message.reply_text(text)
@@ -1280,7 +1015,7 @@ class CommandsBinder:
             return
         parts = _get_command_parts(message)
         if len(parts) < 2:
-            await message.reply_text("Usage: /broadcast <message>")
+            await message.reply_text("Usage: `/broadcast <message>`")
             return
         broadcast_msg = " ".join(parts[1:])
         confirm_keyboard = InlineKeyboardMarkup([
@@ -1292,15 +1027,236 @@ class CommandsBinder:
             reply_markup=confirm_keyboard
         )
 
+    # -------------------------
+    # Unified Callback Handler
+    # -------------------------
+    async def handle_callback(self, client: Client, callback_query: CallbackQuery):
+        data = (callback_query.data or "").strip()
+        if not callback_query.from_user:
+            await safe_answer_callback(callback_query, text="User not found")
+            return
+        user_id = callback_query.from_user.id
+        from_user = callback_query.from_user
+        username = getattr(from_user, "username", None)
+        first_name = getattr(from_user, "first_name", "there") or "there"
+
+        # Update user profile
+        try:
+            updates = {"first_name": first_name, "display_name": first_name}
+            if username:
+                updates["username"] = username
+            db.update_user(user_id, updates)
+        except Exception:
+            pass
+
+        # 1. Check if callback belongs to Admin Panel module
+        if data.startswith("adm_") or data in ("clear_logs",):
+            await self.admin_panel.handle_callback(client, callback_query)
+            return
+
+        # 2. Plan Purchase Callbacks
+        if data == "view_plans":
+            await safe_answer_callback(callback_query)
+            await self.show_premium_plans_screen(callback_query)
+            return
+
+        if data.startswith("buy_plan_"):
+            plan_id = data.replace("buy_plan_", "")
+            await safe_answer_callback(callback_query)
+            await self.show_plan_checkout(callback_query, plan_id)
+            return
+
+        if data == "user_profile":
+            await safe_answer_callback(callback_query)
+            await self.show_user_premium_screen(callback_query, user_id)
+            return
+
+        # 3. Main Menu / Back
+        if data in ("back", "main_menu"):
+            await safe_answer_callback(callback_query)
+            display_name = _display_name_from_callback(callback_query)
+            rec = db.get_user(user_id) or {}
+            prem_mode = db.get_premium_mode()
+            is_premium = db.is_premium(user_id)
+            start_kb = _build_start_keyboard(user_id)
+
+            if not prem_mode:
+                text = (
+                    f"👋 Hello **{display_name}**!\n\n"
+                    "Welcome to **SpotiVerse Bot**!\n\n"
+                    "I can download high-quality audio from:\n"
+                    "• **Spotify** • **YouTube** • **JioSaavn** • **SoundCloud** • **Deezer**\n\n"
+                    "**Your Status:** ✨ All Features Unlocked (Public Mode)\n"
+                    "**Downloads:** Unlimited ♾️ (No daily limit)"
+                )
+            else:
+                text = (
+                    f"👋 Hello **{display_name}**!\n\n"
+                    "Welcome to **SpotiVerse Bot**!\n\n"
+                    f"**Your Status:** {'👑 Premium Member' if is_premium else '👤 Free Member'}\n"
+                )
+                if is_premium:
+                    until_dt = _parse_datetime(rec.get("premium_until"))
+                    rem_str = _format_time_remaining(until_dt) if not rec.get("lifetime_premium") else "Lifetime Access ♾️"
+                    text += f"**Validity:** `{rem_str}`\n**Downloads:** Unlimited ♾️"
+                else:
+                    text += f"**Free Limits:** {rec.get('downloads_today', 0)}/{Config.FREE_USER_DAILY_LIMIT} downloads today\n\n👑 Upgrade to premium for unlimited downloads & FLAC audio!"
+
+            await safe_edit_or_reply(callback_query, text, reply_markup=start_kb, client=self.app)
+            return
+
+        # 4. Premium info callback
+        if data == "premium_info" or data.startswith("premium_"):
+            await safe_answer_callback(callback_query)
+            await self.show_user_premium_screen(callback_query, user_id)
+            return
+
+        # 5. Menu Download
+        if data == "menu_download":
+            await safe_answer_callback(callback_query)
+            text = (
+                "🔎 **Search & Download Music**\n\n"
+                "Send me a song name or Spotify/YouTube/JioSaavn link to search & download.\n\n"
+                "Examples:\n"
+                "• `/search blinding lights`\n"
+                "• `faded alan walker`\n"
+                "• `https://open.spotify.com/track/...`"
+            )
+            kb = [[InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]]
+            await safe_edit_or_reply(callback_query, text, reply_markup=InlineKeyboardMarkup(kb), client=self.app)
+            return
+
+        # 6. Menu Settings
+        if data == "menu_settings":
+            await safe_answer_callback(callback_query)
+            if not db.is_premium(user_id):
+                txt = "⚙️ Settings are available for Premium users only.\nUpgrade to access lossless FLAC, 320kbps MP3, and priority queue."
+                kb = [[InlineKeyboardButton("💎 View Premium Plans", callback_data="view_plans")], [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]]
+                await safe_edit_or_reply(callback_query, txt, reply_markup=InlineKeyboardMarkup(kb), client=self.app)
+                return
+
+            rec = db.get_user(user_id) or {}
+            await safe_edit_or_reply(callback_query, "⚙️ **Settings**\n\nConfigure your download preferences:", reply_markup=_settings_keyboard_for(rec), client=self.app)
+            return
+
+        # 7. Menu Help
+        if data == "menu_help":
+            await safe_answer_callback(callback_query)
+            help_text = (
+                "❓ **SpotiVerse Help & Guide**\n\n"
+                "1. **Search**: Send any song name or use `/search <query>`\n"
+                "2. **Download**: Click any search result or send a direct URL\n"
+                "3. **Supported Platforms**: Spotify, YouTube, JioSaavn, SoundCloud, Deezer\n"
+                "4. **Formats**: High-bitrate MP3 (320kbps) & Lossless FLAC\n"
+                "5. **Premium**: Unlimited downloads & albums with no queues!"
+            )
+            kb = [[InlineKeyboardButton("👑 View Premium Plans", callback_data="view_plans")], [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]]
+            await safe_edit_or_reply(callback_query, help_text, reply_markup=InlineKeyboardMarkup(kb), client=self.app)
+            return
+
+        # 8. Settings toggles
+        if data.startswith("setting_"):
+            await self._handle_settings_callback(callback_query)
+            return
+
+        # 9. Download action from search results
+        if data.startswith("download_"):
+            parts = data.split("_", 2)
+            if len(parts) >= 3:
+                provider = parts[1]
+                tid = parts[2]
+                try:
+                    msg = await callback_query.message.reply_text("🔄 Processing your download...")
+                    await self.download_handler.download_track(provider, tid, user_id, msg)
+                except Exception as e:
+                    logger.error(f"Failed starting download via callback: {e}")
+            return
+
+        # 10. Broadcast callbacks
+        if data in ("broadcast_confirm", "broadcast_cancel"):
+            await self._handle_broadcast_callback(callback_query)
+            return
+
+        # 11. Search cancel & pagination
+        if data == "cancel_search":
+            try:
+                await callback_query.message.delete()
+            except Exception:
+                pass
+            await safe_answer_callback(callback_query, text="Search cancelled")
+            return
+
+        if data.startswith("search_page_"):
+            await safe_answer_callback(callback_query)
+            return
+
+        logger.debug(f"Unhandled callback: {data}")
+
+    async def _handle_settings_callback(self, callback_query: CallbackQuery):
+        data = callback_query.data or ""
+        if not callback_query.from_user:
+            return
+        user_id = callback_query.from_user.id
+        is_premium = db.is_premium(user_id) or Config.is_owner(user_id)
+        rec = db.get_user(user_id) or {}
+
+        if data == "setting_format_info":
+            await safe_answer_callback(
+                callback_query,
+                text="ℹ️ Free users can download MP3. Upgrade to Premium to unlock FLAC, M4A, OGG, and WAV!",
+                show_alert=True
+            )
+            return
+
+        if data == "setting_format":
+            allowed_formats = AudioProfile.get_allowed_formats(is_premium=is_premium)
+            if len(allowed_formats) <= 1:
+                await safe_answer_callback(
+                    callback_query,
+                    text="💎 Upgrade to Premium to unlock Lossless FLAC, M4A, OGG, and Studio WAV formats!",
+                    show_alert=True
+                )
+                return
+            cur_fmt = str(rec.get("preferred_format", "mp3")).lower().strip()
+            if cur_fmt not in allowed_formats:
+                cur_fmt = allowed_formats[0]
+            next_idx = (allowed_formats.index(cur_fmt) + 1) % len(allowed_formats)
+            new_fmt = allowed_formats[next_idx]
+            new_q = AudioProfile.get_default_quality(new_fmt, is_premium=is_premium)
+            db.update_user(user_id, {"preferred_format": new_fmt, "preferred_quality": new_q})
+            await safe_answer_callback(callback_query, text=f"Format set to {new_fmt.upper()}")
+            new_text = "⚙️ **Settings**\n\nConfigure your download preferences:"
+            new_markup = _settings_keyboard_for(db.get_user(user_id))
+            await safe_edit_or_reply(callback_query, new_text, reply_markup=new_markup, client=self.app)
+            return
+
+        if data == "setting_quality":
+            cur_fmt = str(rec.get("preferred_format", "mp3")).lower().strip()
+            allowed_qualities = AudioProfile.get_allowed_qualities(cur_fmt, is_premium=is_premium)
+            cur_q = rec.get("preferred_quality", AudioProfile.get_default_quality(cur_fmt, is_premium))
+            curr_q_str = str(cur_q).lower().strip()
+            match_idx = -1
+            for i, q in enumerate(allowed_qualities):
+                if str(q).lower().strip() == curr_q_str:
+                    match_idx = i
+                    break
+            if match_idx == -1:
+                new_q = allowed_qualities[0]
+            else:
+                new_q = allowed_qualities[(match_idx + 1) % len(allowed_qualities)]
+            db.update_user(user_id, {"preferred_quality": new_q})
+            q_label = AudioProfile.format_quality_label(cur_fmt, new_q)
+            await safe_answer_callback(callback_query, text=f"Quality set to {q_label}")
+            new_text = "⚙️ **Settings**\n\nConfigure your download preferences:"
+            new_markup = _settings_keyboard_for(db.get_user(user_id))
+            await safe_edit_or_reply(callback_query, new_text, reply_markup=new_markup, client=self.app)
+            return
+
     async def _handle_broadcast_callback(self, callback_query: CallbackQuery):
         data = callback_query.data or ""
         if not Config.is_authorized_callback(callback_query):
-            try:
-                await callback_query.answer("❌ Only the owner can broadcast messages.")
-            except Exception:
-                pass
+            await safe_answer_callback(callback_query, text="❌ Unauthorized", show_alert=True)
             return
-        user_id = callback_query.from_user.id if callback_query.from_user else 0
 
         if data == "broadcast_confirm":
             try:
@@ -1309,19 +1265,21 @@ class CommandsBinder:
                     broadcast_msg = orig.split("Message: ", 1)[1]
                     if "\n\nAre you sure?" in broadcast_msg:
                         broadcast_msg = broadcast_msg.rsplit("\n\nAre you sure?", 1)[0]
+                elif "Message Content:\n" in orig:
+                    broadcast_msg = orig.split("Message Content:\n", 1)[1].split("\n\nAre you sure?", 1)[0]
                 else:
                     broadcast_msg = orig
             except Exception:
                 broadcast_msg = "Announcement from admin"
 
-            # Retrieve user list with MongoDB / in-memory fallback
+            # Retrieve user list
+            users_list = []
             if db.available and db.users is not None:
                 try:
                     users_list = list(db.users.find({}, {"user_id": 1}))
                 except Exception:
-                    from utils.db import _fallback_store
-                    users_list = [{"user_id": uid} for uid in _fallback_store.get("users", {}).keys()]
-            else:
+                    pass
+            if not users_list:
                 from utils.db import _fallback_store
                 users_list = [{"user_id": uid} for uid in _fallback_store.get("users", {}).keys()]
 
@@ -1335,10 +1293,8 @@ class CommandsBinder:
                 try:
                     await self.app.send_message(uid, f"📢 **Broadcast**\n\n{broadcast_msg}")
                     success += 1
-                except Exception as e:
+                except Exception:
                     fail += 1
-                    logger.debug(f"Broadcast failed for {uid}: {e}")
-                # small pause to stay well within Telegram broadcast limits
                 await asyncio.sleep(0.04)
                 if i % 25 == 0 or i == total_users:
                     try:
@@ -1349,40 +1305,23 @@ class CommandsBinder:
                 await progress_msg.edit_text(f"✅ **Broadcast Complete**\n\n👥 Total Recipients: {total_users}\n✅ Successful: {success}\n❌ Failed/Blocked: {fail}")
             except Exception:
                 pass
-            try:
-                await callback_query.answer()
-            except Exception:
-                pass
+            await safe_answer_callback(callback_query)
             return
 
         if data == "broadcast_cancel":
-            try:
-                await callback_query.message.edit_text("❌ Broadcast cancelled.")
-                await callback_query.answer()
-            except Exception:
-                pass
+            await safe_edit_or_reply(callback_query, "❌ Broadcast cancelled.", client=self.app)
+            await safe_answer_callback(callback_query)
             return
 
 
-# ----------------------
-# Compatibility wrapper + convenience setup
-# ----------------------
 class CommandHandler(CommandsBinder):
     """
-    Compatibility wrapper for code that expects CommandHandler(bot, logger, search_handler, download_handler)
+    Compatibility wrapper for CommandHandler(bot, logger, search_handler, download_handler)
     """
     def __init__(self, bot, logger: BotLogger, search_handler: SearchHandler, download_handler: DownloadHandler):
-        # Use CommandsBinder under the hood
-        try:
-            super().__init__(bot, search_handler, download_handler, logger)
-        except Exception as e:
-            logger.error(f"Failed to initialize CommandHandler wrapper: {e}")
-            raise
+        super().__init__(bot, search_handler, download_handler, logger)
 
 def setup_handlers(app: Client, search_handler: SearchHandler, download_handler: DownloadHandler, logger_obj: BotLogger = None):
-    """
-    Modern convenience function to register handlers on the pyrogram.Client.
-    Call this from your bot runner before app.run()
-    """
     CommandsBinder(app, search_handler, download_handler, logger_obj)
     logger.info("Command handlers registered (setup_handlers).")
+

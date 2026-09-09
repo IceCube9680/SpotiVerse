@@ -10,6 +10,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from config import Config
 from info import SEARCH_PROVIDERS, DEFAULT_SEARCH_PROVIDER
 from utils.ytdlp_utils import get_ytdlp_options
+from utils.providers import ProviderRegistry
 import logging
 import yt_dlp
 
@@ -318,21 +319,23 @@ class SearchHandler:
                 return cached_res
 
         results = None
-        if provider == "spotify":
-            results = await self.search_spotify(query, limit)
-        elif provider == "youtube":
-            results = await self.search_youtube(query, limit)
-        elif provider == "saavn" or provider == "jiosaavn":
-            results = await self.search_saavn(query, limit)
+        # Only query primary provider if enabled
+        if ProviderRegistry.is_enabled(provider):
+            if provider == "spotify":
+                results = await self.search_spotify(query, limit)
+            elif provider == "youtube":
+                results = await self.search_youtube(query, limit)
+            elif provider in ("saavn", "jiosaavn"):
+                results = await self.search_saavn(query, limit)
 
-        # If primary provider yielded no results, try all available providers
+        # If primary provider yielded no results or was disabled, try other enabled providers
         if not results:
-            for prov in ["spotify", "saavn", "youtube"]:
-                if prov == provider:
+            for prov in ["spotify", "jiosaavn", "youtube"]:
+                if prov == provider or not ProviderRegistry.is_enabled(prov):
                     continue
                 if prov == "spotify":
                     results = await self.search_spotify(query, limit)
-                elif prov == "saavn":
+                elif prov in ("saavn", "jiosaavn"):
                     results = await self.search_saavn(query, limit)
                 elif prov == "youtube":
                     results = await self.search_youtube(query, limit)

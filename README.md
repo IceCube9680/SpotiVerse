@@ -2,21 +2,22 @@
 
 # 🎵 SpotiVerse
 
-### Modular & Asynchronous Telegram Music Downloader Bot
+### Modular & Asynchronous Telegram Music Downloader Bot with Production-Grade Premium & Admin Ecosystem
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Pyrogram](https://img.shields.io/badge/Pyrogram-v2.0-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://docs.pyrogram.org/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-Supported-47A248?style=for-the-badge&logo=mongodb&logoColor=white)](https://www.mongodb.com/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
-[![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-brightgreen.svg?style=for-the-badge)](https://github.com/priest9680/SpotiVerse)
+[![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-brightgreen.svg?style=for-the-badge)](https://github.com/IceCube9680/SpotiVerse)
 
 <p align="center">
   A feature-packed, high-performance Telegram music bot built with <b>Pyrogram v2</b>, <b>yt-dlp</b>, and <b>FFmpeg</b>.<br>
-  Search, stream, and download tracks, albums, and playlists from <b>Spotify</b>, <b>YouTube</b>, <b>JioSaavn</b>, <b>SoundCloud</b>, and <b>Deezer</b> in high-fidelity <b>MP3</b> or lossless <b>FLAC</b> with complete metadata tagging.
+  Search, stream, and download tracks, albums, and playlists from <b>Spotify</b>, <b>YouTube</b>, <b>JioSaavn</b>, <b>SoundCloud</b>, and <b>Deezer</b> in high-fidelity <b>MP3</b> or lossless <b>FLAC</b> with complete metadata tagging.<br>
+  Includes a centralized <b>Admin Panel</b>, <b>Interactive Premium Plans UI</b>, <b>Dynamic Feature Gates</b>, <b>Maintenance Mode</b>, and <b>Real-Time Statistics Dashboard</b>.
 </p>
 
-[**Explore Features**](#-key-features) • [**Quickstart**](#-quickstart-guide) • [**Bot Commands**](#-bot-commands) • [**Configuration**](#-environment-variables) • [**Deployment**](#-deployment-options)
+[**Explore Features**](#-key-features) • [**Admin Panel & Security**](#-admin-panel--security) • [**Premium Ecosystem**](#-premium-ecosystem) • [**Quickstart**](#-quickstart-guide) • [**Bot Commands**](#-bot-commands) • [**Configuration**](#-environment-variables) • [**Deployment**](#-deployment-options)
 
 ---
 
@@ -25,6 +26,10 @@
 ## 📑 Table of Contents
 
 - [✨ Key Features](#-key-features)
+- [🛡️ Admin Panel & Security](#️-admin-panel--security)
+- [👑 Premium Ecosystem](#-premium-ecosystem)
+- [🔌 Provider Management & Feature Gates](#-provider-management--feature-gates)
+- [📊 Statistics Dashboard](#-statistics-dashboard)
 - [🏗️ Project Architecture](#️-project-architecture)
 - [🚀 Quickstart Guide](#-quickstart-guide)
   - [Prerequisites](#prerequisites)
@@ -47,26 +52,119 @@
 
 - **🔍 Multi-Platform Unified Search**
   Search across **Spotify**, **YouTube / YouTube Music**, **JioSaavn**, **SoundCloud**, and **Deezer** from a single search query or link.
-- **🎵 Studio-Grade Audio Quality**
-  Customizable audio formats and bitrates:
+- **🎵 Studio-Grade Multi-Format Audio Quality**
+  Customizable audio formats and bitrates with non-upscaling source quality tracking:
   - **MP3**: 64 kbps, 128 kbps, 192 kbps, 256 kbps, and 320 kbps (CBR/VBR).
   - **FLAC**: Lossless audio conversion (Low, Medium, High compression).
+  - **M4A**: 128 kbps, 192 kbps, 256 kbps, and 320 kbps (High-efficiency AAC).
+  - **OGG**: 64 kbps, 96 kbps, 128 kbps, 160 kbps, 192 kbps, 256 kbps, and 320 kbps (Ogg Vorbis).
+  - **WAV**: Uncompressed Studio Master PCM (16-bit 44.1kHz, 16-bit 48kHz, 24-bit 44.1kHz, 24-bit 48kHz, 24-bit 96kHz).
 - **⚡ Zero-Credential Spotify Fallback**
   Works out of the box even without Spotify API credentials by using an automated anonymous web scraper and provider fallback mechanism.
 - **🖼️ Complete Metadata & Cover Art Injection**
-  Automatically embeds high-resolution cover artwork, title, artists, album name, track numbers, and release year into ID3 (MP3) and Vorbis (FLAC) tags using `mutagen` and `Pillow`.
+  Automatically embeds high-resolution cover artwork, title, artists, album name, track numbers, and release year into ID3 (MP3), Vorbis (FLAC/OGG), MP4 (M4A), and RIFF/ID3 (WAV) tags using `mutagen` and `Pillow`.
 - **📀 Batch Playlist & Album Downloader**
-  Download entire albums, playlists, and artist top tracks with real-time progress indicators and cancellation controls.
-- **💎 Tiered User & Subscription Management**
-  Built-in free tier with customizable daily limits and a flexible premium tier supporting custom durations (`7d`, `30d`, `1y`, `lifetime`).
+  Download entire albums, playlists, and artist top tracks with real-time progress indicators, cancellation controls, and premium priority scheduling.
+- **💎 Production-Grade Premium Subscription System**
+  Configurable plans (1M, 3M, 6M, 1Y, Lifetime), non-hardcoded pricing, user status screens, and decoupled payment providers (Telegram Payments, UPI/QR verification).
+- **🛠️ Telegram Admin Panel with Code Security**
+  Interactive GUI panel with SHA-256 access code authentication, rate-limited lockout protection, session timeouts, and revalidated callback authorizations.
+- **🔌 Live Provider Management**
+  Toggle individual music providers (Spotify, YouTube, JioSaavn, SoundCloud, Deezer) ON/OFF directly from Telegram with instant backend routing enforcement.
+- **⚙️ Dynamic Bot Settings & Maintenance Mode**
+  Runtime feature gates for Premium System, Free Downloads, Premium Downloads, FLAC, Batch, Priority Queue, and Maintenance Mode with administrative bypass.
+- **📊 Real-Time Multi-Period Statistics Dashboard**
+  Real-time database-aggregated metrics across 24 hours, 7 days, 30 days, and All-Time with mathematically accurate platform share breakdowns and success rates.
 - **🛡️ Dual-Layer Database Architecture**
-  Primary storage via **MongoDB Atlas / Local MongoDB** with an automated **SQLite/JSON fallback** that auto-syncs when reconnecting.
-- **⚡ High-Throughput Async Engine**
-  Powered by `uvloop`, non-blocking async FFmpeg transcoders, and download concurrency semaphores to prevent server saturation.
-- **📢 Real-Time Channel Logging**
-  Dedicated Telegram logging channels for new user onboardings, download audits, error tracking, and startup alerts.
-- **🛠️ Full Administrator Toolset**
-  User inspection, ban/unban controls, system metrics, log export, and broadcast messaging to all active users.
+  Primary storage via **MongoDB Atlas / Local MongoDB** with indexed collections (`users`, `bot_settings`, `provider_settings`, `premium_plans`, `download_records`, `admin_audit`) and an automated in-memory fallback.
+
+---
+
+## 🛡️ Admin Panel & Security
+
+Access the centralized Admin Panel anytime using `/admin` (or `/panel`, `/dashboard`).
+
+```plaintext
+🛠 Admin Panel
+┌───────────────────────────────┐
+│ 📊 Statistics    👑 Premium   │
+│ ⚙️ Bot Settings   🔌 Providers │
+│ 🔧 Maintenance   👥 Users     │
+│ 📢 Broadcast     📜 Logs      │
+│ 🚪 Logout        ⬅️ Back      │
+└───────────────────────────────┘
+```
+
+### Security Highlights
+- **Role-Based Authorization**: Strict validation of `OWNER_ID`, `ADMINS`, and `SUDO_USERS` on every administrative action and callback query.
+- **Complete Audit Trail**: Sensitive actions (`add_premium`, `toggle_provider`, `maintenance_mode`, `bot_settings`, `user_ban`, `broadcast`) are permanently audited in the database with timestamps and admin IDs.
+
+---
+
+## 👑 Premium Ecosystem
+
+### User-Facing Premium UI
+Users can view and manage their membership at any time using `/premium`, `/plans`, or `/profile`:
+- **👑 Premium Member Screen**: Shows membership type, active plan, expiration date, remaining days countdown, and full entitlement checklist.
+- **💳 Premium Plans Screen**: Features customizable plans (1 Month ₹99, 3 Months ₹249 *Most Popular*, 6 Months ₹399, 1 Year ₹699, Lifetime ₹1499) with savings percentages and instant purchase routing.
+- **🛡️ Decoupled Payment Architecture**: Generates verified order IDs and instructions for UPI/Telegram Payments; premium activation occurs strictly upon verified payment or administrator action.
+
+### Entitlements & Priority Queue
+- **Free Users**: Configurable daily limits (`FREE_USER_DAILY_LIMIT=5`), MP3 quality, standard priority queue.
+- **Premium Users**: Unlimited daily downloads, FLAC lossless format, batch playlist downloads, and weighted priority scheduling (`PREMIUM_PRIORITY_WEIGHT=3`) with fair concurrency reservation.
+
+---
+
+## 🔌 Provider Management & Feature Gates
+
+Control the entire bot runtime without restarting the server:
+
+- **Provider Management (`/admin -> 🔌 Providers`)**:
+  - 🟢 Spotify • 🟢 YouTube • 🟢 JioSaavn • 🟢 SoundCloud • 🟢 Deezer
+  - Disabling a provider immediately stops routing searches and downloads to that platform and returns user-friendly notice banners.
+- **Bot Settings (`/admin -> ⚙️ Bot Settings`)**:
+  - `Premium System`: Toggle enforcement of premium tiers.
+  - `Free Download`: Master switch for free-tier downloads.
+  - `Premium Download`: Master switch for premium downloads.
+  - `Premium FLAC`: Toggle FLAC lossless transcoding permission.
+  - `Premium Batch`: Toggle album/playlist batch downloading.
+  - `Premium Priority`: Toggle weighted priority queuing.
+- **Maintenance Mode (`/admin -> 🔧 Maintenance`)**:
+  - Instantly pause new download requests with custom maintenance banners while allowing existing active downloads to finish smoothly.
+  - Configurable bypass rules: `MAINTENANCE_ALLOW_ADMIN=True`, `MAINTENANCE_ALLOW_PREMIUM=False`.
+
+---
+
+## 📊 Statistics Dashboard
+
+The interactive Statistics Dashboard aggregates real data directly in the database across **24 Hours**, **7 Days**, **30 Days**, and **All-Time**:
+
+```plaintext
+📊 Statistics (Last 30 Days)
+
+👥 Users:
+• Total Registered: 12,540
+• Active: 4,120 | Premium: 842
+
+📥 Downloads:
+• Total Attempts: 93,412
+• Successful: 90,050 | Failed: 3,362
+• Success Rate: 96.4%
+
+🎵 Formats & Queues:
+• MP3 Downloads: 82,100 | FLAC Downloads: 7,950
+• Active In-Flight: 2 | Queued: 0
+
+🔥 Top Platforms (Successful):
+• YouTube:    42,100 (46.8%)
+• Spotify:    28,300 (31.4%)
+• JioSaavn:   12,200 (13.5%)
+• SoundCloud:  5,100 (5.7%)
+• Deezer:      2,350 (2.6%)
+
+⏱️ System:
+• Uptime: 4d 12h 30m | DB: Connected
+```
 
 ---
 
@@ -74,22 +172,28 @@
 
 ```plaintext
 SpotiVerse/
-├── bot.py                  # Bot entry point, lifecycle management & event loop
+├── bot.py                  # Bot lifecycle, uvloop init & startup tasks
 ├── config.py               # Centralized configuration & environment loader
-├── info.py                 # Bot constants, premium plans & default settings
-├── Dockerfile              # Containerization definition with FFmpeg pre-installed
+├── info.py                 # Bot constants, premium plans & duration parser
+├── Dockerfile              # Containerization definition with FFmpeg
 ├── requirements.txt        # Python dependency manifest
 ├── handlers/
-│   ├── commands.py         # Command routers, callback queries & inline buttons
-│   ├── search.py           # Multi-platform search provider aggregators
-│   └── downloads.py        # Audio extraction, batch queue, FFmpeg processing & upload
+│   ├── admin_panel.py      # Interactive Admin Panel, stats & settings
+│   ├── commands.py         # User commands, plans screen, profile & callbacks
+│   ├── downloads.py        # Priority queue downloader, FFmpeg & upload
+│   └── search.py           # Multi-platform provider aggregators
 ├── utils/
+│   ├── admin_security.py   # Code hashing, lockout rate limiter & sessions
 │   ├── audio.py            # Audio transcoding & metadata/thumbnail embedding
-│   ├── db.py               # MongoDB database layer with local fallback & auto-sync
-│   ├── logger.py           # Telegram channel logging and audit utilities
-│   └── ytdlp_utils.py      # yt-dlp configuration, cookies loader & network tuners
-├── data/                   # Persistent storage (thumbnails, SQLite fallback cache)
-└── temp/                   # Temporary directory for processing audio downloads
+│   ├── db.py               # MongoDB multi-collection layer & fallback store
+│   ├── feature_gates.py    # 11-step centralized authorization pipeline
+│   ├── logger.py           # Telegram channel logging & audit utilities
+│   ├── payment.py          # Payment provider abstraction (Telegram & UPI)
+│   ├── providers.py        # ProviderRegistry with persistent toggle states
+│   ├── queue.py            # Priority-aware fair download scheduling queue
+│   └── ytdlp_utils.py      # yt-dlp tuners & cookies loader
+├── data/                   # Persistent storage (thumbnails, cache)
+└── temp/                   # Temporary directory for audio processing
 ```
 
 ---
@@ -98,14 +202,12 @@ SpotiVerse/
 
 ### Prerequisites
 
-Before setting up the bot, ensure your environment meets the following requirements:
-
 - **Python**: Version `3.10` or higher (`python3 --version`)
-- **FFmpeg**: Installed and available in your system `$PATH` (`ffmpeg -version`)
-- **Telegram Account**:
+- **FFmpeg**: Installed and available in system `$PATH` (`ffmpeg -version`)
+- **Telegram Credentials**:
   - `API_ID` & `API_HASH` from [my.telegram.org](https://my.telegram.org)
   - `BOT_TOKEN` from [@BotFather](https://t.me/BotFather)
-- **MongoDB Database**: MongoDB Atlas URI or local instance (Optional: Falls back to local database if omitted)
+- **MongoDB Atlas**: Free cluster or local instance (Optional: In-memory fallback is automatic)
 
 ### Standard Installation
 
@@ -115,47 +217,28 @@ Before setting up the bot, ensure your environment meets the following requireme
    cd SpotiVerse
    ```
 
-2. **Set Up a Virtual Environment**
+2. **Set Up Virtual Environment**
    ```bash
    python3 -m venv venv
-
-   # On Linux/macOS:
    source venv/bin/activate
-
-   # On Windows (PowerShell):
-   .\venv\Scripts\Activate.ps1
    ```
 
-3. **Install System Dependencies (FFmpeg)**
+3. **Install Dependencies**
    ```bash
-   # Debian / Ubuntu / Raspberry Pi OS:
-   sudo apt update && sudo apt install -y ffmpeg curl
-
-   # Arch Linux:
-   sudo pacman -S ffmpeg
-
-   # macOS (Homebrew):
-   brew install ffmpeg
-
-   # Windows (Chocolatey / Scoop):
-   choco install ffmpeg
-   ```
-
-4. **Install Python Packages**
-   ```bash
-   pip install --upgrade pip setuptools wheel
+   sudo apt update && sudo apt install -y ffmpeg curl   # Debian / Ubuntu
+   pip install --upgrade pip
    pip install -r requirements.txt
    ```
 
-5. **Configure Environment Variables**
+4. **Configure Environment**
    ```bash
    cp .env.sample .env
    nano .env
    ```
 
-6. **Run the Bot**
+5. **Run the Bot**
    ```bash
-   python bot.py
+   python3 bot.py
    ```
 
 ---
@@ -171,17 +254,25 @@ Configure your `.env` file using the parameters below:
 | `API_HASH` | `String` | **Yes** | — | Telegram API Hash from [my.telegram.org](https://my.telegram.org). |
 | `OWNER_ID` | `Integer` | **Yes** | `0` | Telegram user ID of the primary bot owner. |
 | `ADMINS` / `SUDO_USERS` | `List[Int]` | No | `[]` | Comma or space-separated list of admin Telegram user IDs. |
-| `MONGO_URI` | `String` | No | *Local DB* | MongoDB connection string (e.g. `mongodb+srv://...`). |
-| `SPOTIFY_CLIENT_ID` | `String` | No | `""` | Spotify Developer API Client ID (falls back to anonymous web scraper if empty). |
-| `SPOTIFY_CLIENT_SECRET` | `String` | No | `""` | Spotify Developer API Client Secret. |
-| `YOUTUBE_API_KEY` | `String` | No | `""` | Optional YouTube Data API v3 key. |
-| `LOG_CHANNEL` | `Integer` | No | `0` | Telegram Channel ID (e.g. `-100...`) for user onboarding & system logs. |
-| `DOWNLOAD_LOG_CHANNEL` | `Integer` | No | `0` | Telegram Channel ID for download audit logs. |
-| `PREMIUM` / `PREMIUM_MODE` | `Boolean` | No | `True` | `True` = Premium features restricted to premium users; `False` = All features unlocked for everyone. |
-| `FREE_USER_DAILY_LIMIT` | `Integer` | No | `5` | Daily download quota for free users (`0` or large number to disable). |
-| `MAX_CONCURRENT_DOWNLOADS` | `Integer` | No | `3` | Maximum simultaneous download threads. |
-| `COOKIES_FILE` | `String` | No | `cookies.txt` | Path to exported YouTube Netscape cookies to bypass bot blocks. |
-| `PREMIUM_USERS` | `List[Int]` | No | `[]` | Initial list of Telegram user IDs granted permanent premium status. |
+| `MONGO_URI` | `String` | No | *In-Memory* | MongoDB Atlas connection URI (`mongodb+srv://...`). |
+| `PREMIUM` / `PREMIUM_MODE` | `Boolean` | No | `True` | Global premium feature enforcement flag. |
+| `FREE_USER_DAILY_LIMIT` | `Integer` | No | `5` | Daily download quota for free users (`0` to disable). |
+| `PREMIUM_EXPIRY_WARNING_DAYS` | `Integer` | No | `7` | Threshold in days for the Admin *Expiring Soon* list. |
+| `MAX_CONCURRENT_DOWNLOADS` | `Integer` | No | `3` | Global simultaneous download limit. |
+| `MAX_PREMIUM_CONCURRENT_DOWNLOADS` | `Integer` | No | `5` | Concurrency limit for premium user queue. |
+| `MAX_FREE_CONCURRENT_DOWNLOADS` | `Integer` | No | `2` | Concurrency limit for free user queue. |
+| `PREMIUM_PRIORITY_WEIGHT` | `Integer` | No | `3` | Scheduling ratio for premium vs. free download tasks. |
+| `FREE_AUDIO_FORMATS` | `List[String]` | No | `["mp3"]` | Allowed formats for free users. |
+| `FREE_MP3_QUALITIES` | `List[Int]` | No | `[64, 128, 192, 256, 320]` | Allowed MP3 bitrates for free users. |
+| `PREMIUM_AUDIO_FORMATS` | `List[String]` | No | `["mp3", "flac", "m4a", "ogg", "wav"]` | Allowed formats for premium users. |
+| `PREMIUM_MP3_QUALITIES` | `List[Int]` | No | `[64, 128, 192, 256, 320]` | Allowed MP3 bitrates for premium users. |
+| `PREMIUM_M4A_QUALITIES` | `List[Int]` | No | `[128, 192, 256, 320]` | Allowed M4A bitrates for premium users. |
+| `PREMIUM_OGG_QUALITIES` | `List[Int]` | No | `[64, 96, 128, 160, 192, 256, 320]` | Allowed Ogg Vorbis bitrates for premium users. |
+| `PREMIUM_WAV_BIT_DEPTHS` | `List[Int]` | No | `[16, 24]` | Allowed WAV PCM bit depths for premium users. |
+| `PREMIUM_WAV_SAMPLE_RATES` | `List[Int]` | No | `[44100, 48000, 96000]` | Allowed WAV sample rates (Hz) for premium users. |
+| `MAX_AUDIO_FILE_SIZE_MB` | `Integer` | No | `50` | Maximum audio upload file size before warning. |
+| `PAYMENT_UPI_ID` | `String` | No | `icecube@upi` | UPI ID displayed for manual QR payments. |
+| `PAYMENT_PROVIDER_TOKEN` | `String` | No | `""` | Telegram Payments Provider token for invoices. |
 
 ---
 
@@ -191,156 +282,74 @@ Configure your `.env` file using the parameters below:
 
 | Command | Aliases | Parameters | Description |
 | :--- | :--- | :--- | :--- |
-| `/start` | — | None | Starts the bot, verifies user status, and shows the interactive main menu. |
-| `/search` | `/s`, `/find` | `<query>` | Performs a unified search across platforms with paginated inline buttons. |
-| `/download` | `/dl`, `/d` | `<url>` or `<query>` | Downloads a single track, album, or playlist directly. |
-| `/settings` | `/setting`, `/set` | None | Opens the interactive settings menu to switch audio format (MP3/FLAC) & bitrate. |
-| `/userinfo` | `/user_info`, `/info`, `/me`, `/myinfo` | None | Displays your account status, membership tier, and daily download quota. |
-| `/premium` | `/prem`, `/plan` | None | Displays premium subscription benefits and upgrade instructions. |
-| `/help` | `/h` | None | Displays a comprehensive help manual and usage examples. |
+| `/start` | — | None | Starts the bot, registers profile, and displays main menu. |
+| `/search` | `/s`, `/find` | `<query>` | Unified multi-platform search with paginated inline buttons. |
+| `/download` | `/dl`, `/d` | `<url>` or `<query>` | Directly download track, album, or playlist. |
+| `/settings` | `/setting`, `/set` | None | Configure default format (MP3/FLAC) and bitrate (64k–320k). |
+| `/profile` | `/userinfo`, `/me` | None | Displays membership tier, download stats, and remaining quota. |
+| `/premium` | `/prem`, `/plans` | None | Interactive Premium Plans screen & membership upgrade options. |
+| `/help` | `/h` | None | Displays interactive help manual and format specifications. |
 
 ### Admin & Owner Commands
 
 | Command | Aliases | Parameters | Description |
 | :--- | :--- | :--- | :--- |
-| `/premiummode` | `/setmode`, `/togglemode` | `<true\|false>` | Toggle global premium mode (`true` = strict premium, `false` = all features unlocked for everyone). |
-| `/premium <true\|false>` | `/prem`, `/plan` | `<true\|false>` | Quickly toggle global premium enforcement on or off. |
-| `/add_premium` | `/give_premium`, `/set_premium` | `<user_id>` `<duration>` | Grants premium status to a user (e.g., `7d`, `30d`, `1y`, `lifetime`). |
-| `/remove_premium` | `/del_premium`, `/unpremium` | `<user_id>` | Revokes premium status from a specific user. |
-| `/stats` | `/stat` | None | Displays real-time bot statistics (active users, total downloads, DB status). |
-| `/users` | `/user`, `/totalusers` | None | Summarizes registered users and provides an export list. |
-| `/broadcast` | `/bc` | `<message>` / Reply | Broadcasts a text or media message to all registered users with delivery statistics. |
-| `/logs` | `/log` | None | Fetches recent application runtime logs directly in chat or as a document. |
-
-### Direct Chat & Inline Features
-
-- **Direct Messages**: Simply type any song title or paste a music link into the private chat—the bot will automatically start searching or downloading.
-- **Inline Audio Quality Toggler**: Quickly toggle between MP3 (64k–320k) and FLAC in real-time from the `/settings` keyboard.
-- **Interactive Batch Downloader**: When downloading playlists or albums, interact with the inline **Cancel** button at any point to stop remaining tracks.
+| `/admin` | `/panel`, `/dashboard` | None | Opens the interactive Telegram Admin Panel. |
+| `/stats` | `/stat` | None | Real-time system, user, and download statistics. |
+| `/add_premium` | `/give_premium` | `<user_id>` `<duration>` | Grants premium status (`7d`, `30d`, `90d`, `180d`, `1y`, `lifetime`). |
+| `/remove_premium` | `/unpremium` | `<user_id>` | Revokes premium status from a user. |
+| `/ban` | `/unban` | `<user_id>` | Ban or unban a user from using the bot. |
+| `/broadcast` | `/bc` | `<msg>` / Reply | Broadcasts message with progress and delivery stats. |
+| `/logs` | `/log` | None | Exports live runtime log stream directly into chat. |
 
 ---
 
 ## 📦 Deployment Options
 
 ### 1. Local Deployment
+```bash
+# Clone & install dependencies
+git clone https://github.com/IceCube9680/SpotiVerse
+cd SpotiVerse
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
 
-Deploy and run SpotiVerse locally on your system or VPS:
-
-1. **Clone the Repository**
-   ```bash
-   git clone https://github.com/IceCube9680/SpotiVerse
-   cd SpotiVerse
-   ```
-
-2. **Set Up a Virtual Environment**
-   ```bash
-   python3 -m venv venv
-
-   # Linux / macOS:
-   source venv/bin/activate
-
-   # Windows (PowerShell):
-   .\venv\Scripts\Activate.ps1
-   ```
-
-3. **Install Dependencies**
-   ```bash
-   # Ensure FFmpeg is installed:
-   sudo apt update && sudo apt install -y ffmpeg curl   # Debian/Ubuntu
-   # brew install ffmpeg                                # macOS
-   # choco install ffmpeg                               # Windows
-
-   # Install Python requirements:
-   pip install --upgrade pip
-   pip install -r requirements.txt
-   ```
-
-4. **Configure Environment Variables**
-   ```bash
-   cp .env.sample .env
-   nano .env
-   ```
-
-5. **Run the Bot**
-   - **Foreground / Direct Mode:**
-     ```bash
-     python3 bot.py
-     ```
-   - **Background Mode (Using Screen):**
-     ```bash
-     # Start a new screen session:
-     screen -S spotiverse python3 bot.py
-     # Press Ctrl + A, then D to detach.
-
-     # Reattach to session:
-     screen -r spotiverse
-     ```
-   - **Background Mode (Using Nohup):**
-     ```bash
-     nohup python3 bot.py > bot.log 2>&1 &
-
-     # View live logs:
-     tail -f bot.log
-     ```
+# Configure & run
+cp .env.sample .env
+python3 bot.py
+```
 
 ### 2. Docker Container
-
-Build and deploy SpotiVerse in an isolated container with all system dependencies pre-configured:
-
-1. **Build the Docker Image**
-   ```bash
-   docker build -t spotiverse:latest .
-   ```
-
-2. **Run the Container**
-   ```bash
-   docker run -d \
-     --name spotiverse_bot \
-     --restart unless-stopped \
-     --env-file .env \
-     -v $(pwd)/data:/app/data \
-     spotiverse:latest
-   ```
-
-3. **Check Container Logs**
-   ```bash
-   docker logs -f spotiverse_bot
-   ```
+```bash
+docker build -t spotiverse:latest .
+docker run -d \
+  --name spotiverse_bot \
+  --restart unless-stopped \
+  --env-file .env \
+  -v $(pwd)/data:/app/data \
+  spotiverse:latest
+```
 
 ---
 
 ## 🔧 Troubleshooting & FAQ
 
 <details>
-<summary><b>1. FFmpeg is not detected or audio conversion fails</b></summary>
+<summary><b>1. Admin Panel access</b></summary>
 
-- Verify FFmpeg is installed and accessible in your environment path by running:
-  ```bash
-  ffmpeg -version
-  ```
-- If running under a custom user or cron/systemd service, ensure `/usr/bin` or `/usr/local/bin` is in the `PATH` environment variable.
+- Only authorized Telegram users configured in `OWNER_ID`, `ADMINS`, or `SUDO_USERS` can access `/admin`.
 </details>
 
 <details>
-<summary><b>2. YouTube throws "Sign in to confirm you’re not a bot" (HTTP 429)</b></summary>
+<summary><b>2. YouTube bot detection (HTTP 429)</b></summary>
 
-- YouTube frequently rate-limits datacenter IPs. To resolve this:
-  1. Export cookies from your browser using a browser extension (such as *Get cookies.txt LOCALLY*).
-  2. Place the exported file as `cookies.txt` in the root project folder.
-  3. Ensure `COOKIES_FILE=cookies.txt` is set in your `.env` file.
+- Place an exported `cookies.txt` file in the project root to authenticate with YouTube.
 </details>
 
 <details>
-<summary><b>3. Bot does not log to Telegram channels</b></summary>
+<summary><b>3. Maintenance Mode behavior</b></summary>
 
-- Ensure your bot is added to your target channel as an **Administrator** with *Post Messages* and *Edit Messages* permissions.
-- Make sure your channel ID includes the `-100` prefix (e.g., `-1001234567890`).
-</details>
-
-<details>
-<summary><b>4. Telegram FloodWait error</b></summary>
-
-- SpotiVerse contains built-in throttling for progress bars and message edits. If FloodWait is triggered during heavy traffic, the bot will automatically sleep for the requested duration and safely resume.
+- When Maintenance is enabled, new user downloads are immediately halted with an informative notice. In-flight downloads finish uninterrupted.
 </details>
 
 ---
@@ -349,19 +358,14 @@ Build and deploy SpotiVerse in an isolated container with all system dependencie
 
 > [!IMPORTANT]
 > **Educational & Personal Use Only**
-> This repository is intended strictly for educational, archival, and personal research purposes. 
-> - Downloading copyrighted material without permission from the respective copyright owner may infringe local laws and third-party terms of service.
-> - The developers and contributors of this repository are not responsible for any misuse of this software.
-> - All trademarks, logos, and brand names are the property of their respective owners.
+> This software is intended for personal research and educational purposes. Ensure compliance with your local laws and third-party terms of service. All trademarks and logos belong to their respective owners.
 
 ---
 
 ## 📄 License
 
-Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for complete details.
-
----
+Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for details.
 
 <div align="center">
-  <sub>Built with ❤️ by <a href="https://github.com/priest9680">Priest Gamer</a></sub>
+  <sub>Built with ❤️ by <a href="https://github.com/IceCube9680">IceCube</a> & <a href="https://github.com/priest9680">Priest Gamer</a></sub>
 </div>

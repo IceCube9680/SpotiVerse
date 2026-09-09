@@ -27,5 +27,3 @@ env/
 spotiverse.service
 spotiverse.sh
 
-# Tests
-tests/

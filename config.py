@@ -30,6 +30,13 @@ def _bool_env(var_name, default=True):
     if val is None or val.strip() == "":
         return default
     return val.strip().lower() in ("true", "1", "yes", "on", "t")
+
+def _list_str_env(var_name, default=None):
+    val = os.getenv(var_name)
+    if not val:
+        return default or []
+    items = [x.strip().lower() for x in val.replace(",", " ").split() if x.strip()]
+    return items or (default or [])
         
 class Config:
     # Premium Feature Enforcement (True = Premium members only; False = All features unlocked for everyone)
@@ -102,6 +109,9 @@ class Config:
 
     # Download Settings
     MAX_CONCURRENT_DOWNLOADS = _int_env("MAX_CONCURRENT_DOWNLOADS", 3)
+    MAX_PREMIUM_CONCURRENT_DOWNLOADS = _int_env("MAX_PREMIUM_CONCURRENT_DOWNLOADS", 5)
+    MAX_FREE_CONCURRENT_DOWNLOADS = _int_env("MAX_FREE_CONCURRENT_DOWNLOADS", 2)
+    PREMIUM_PRIORITY_WEIGHT = _int_env("PREMIUM_PRIORITY_WEIGHT", 3)
     TEMP_DOWNLOAD_DIR = "temp/"
     THUMBNAIL_DIR = "data/thumbnails/"
     COOKIES_FILE = os.getenv("COOKIES_FILE", "cookies.txt")
@@ -109,8 +119,36 @@ class Config:
     # Free User Limits
     FREE_USER_DAILY_LIMIT = _int_env("FREE_USER_DAILY_LIMIT", 5)
 
-    # Supported Formats
+    # Maintenance Mode Rules
+    MAINTENANCE_ALLOW_PREMIUM = _bool_env("MAINTENANCE_ALLOW_PREMIUM", False)
+    MAINTENANCE_ALLOW_ADMIN = _bool_env("MAINTENANCE_ALLOW_ADMIN", True)
+
+    # Expiry Warning
+    PREMIUM_EXPIRY_WARNING_DAYS = _int_env("PREMIUM_EXPIRY_WARNING_DAYS", 7)
+
+    # Payment Provider Credentials (Optional)
+    PAYMENT_PROVIDER_TOKEN = os.getenv("PAYMENT_PROVIDER_TOKEN", "")
+    PAYMENT_UPI_ID = os.getenv("PAYMENT_UPI_ID", "icecube@upi")
+
+    # Supported Formats & Qualities
     SUPPORTED_FORMATS = {
         "mp3": [64, 128, 192, 256, 320],
-        "flac": ["low", "medium", "high"]
+        "flac": ["low", "medium", "high"],
+        "m4a": [128, 192, 256, 320],
+        "ogg": [64, 96, 128, 160, 192, 256, 320],
+        "wav": ["16-bit 44.1kHz", "16-bit 48kHz", "24-bit 44.1kHz", "24-bit 48kHz", "24-bit 96kHz"]
     }
+
+    # Audio Entitlements & Quality Limits
+    FREE_AUDIO_FORMATS = _list_str_env("FREE_AUDIO_FORMATS", ["mp3"])
+    FREE_MP3_QUALITIES = _list_int_env("FREE_MP3_QUALITIES", [64, 128, 192, 256, 320])
+
+    PREMIUM_AUDIO_FORMATS = _list_str_env("PREMIUM_AUDIO_FORMATS", ["mp3", "flac", "m4a", "ogg", "wav"])
+    PREMIUM_MP3_QUALITIES = _list_int_env("PREMIUM_MP3_QUALITIES", [64, 128, 192, 256, 320])
+    PREMIUM_M4A_QUALITIES = _list_int_env("PREMIUM_M4A_QUALITIES", [128, 192, 256, 320])
+    PREMIUM_OGG_QUALITIES = _list_int_env("PREMIUM_OGG_QUALITIES", [64, 96, 128, 160, 192, 256, 320])
+    PREMIUM_WAV_BIT_DEPTHS = _list_int_env("PREMIUM_WAV_BIT_DEPTHS", [16, 24])
+    PREMIUM_WAV_SAMPLE_RATES = _list_int_env("PREMIUM_WAV_SAMPLE_RATES", [44100, 48000, 96000])
+
+    # File Size Limits (Telegram standard bot limit is 50MB)
+    MAX_AUDIO_FILE_SIZE_MB = _int_env("MAX_AUDIO_FILE_SIZE_MB", 50)

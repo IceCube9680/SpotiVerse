@@ -7,8 +7,11 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQ
 from config import Config
 from utils.db import db
 from utils.audio import AudioProcessor
+from utils.audio_formats import AudioProfile, AudioFormat
 from utils.logger import BotLogger
 from utils.ytdlp_utils import get_ytdlp_options
+from utils.feature_gates import FeatureGate
+from utils.queue import download_queue, DownloadSlot
 from handlers.search import SearchHandler
 import logging
 import re
@@ -319,36 +322,7 @@ class DownloadHandler:
     async def download_track(self, provider, track_id, user_id, message, is_batch=False):
         """Download a track from the specified provider - returns success status (Free + Premium)"""
         user = db.get_user(user_id) or {}
-
-        # Check download quota
-        can_download, reason = db.can_download(user_id)
-        if not can_download:
-            await self.safe_edit_message(
-                message,
-                f"❌ {reason}\n\n"
-                f"📊 Free Users Daily Limit: {user.get('downloads_today', 0)}/{Config.FREE_USER_DAILY_LIMIT} downloads today.\n\n"
-                f"💎 Upgrade to Premium for unlimited downloads and higher quality!\n"
-                f"Contact: @icecube9608\n\n"
-                f"👤 **Your User ID:** `{user_id}`"
-            )
-            return False
-
-        # Get track info based on provider
-        track_info = await self.get_track_info(provider, track_id)
-        if not track_info:
-            await self.safe_edit_message(message, "❌ Could not retrieve track information.")
-            return False
-
-        # Download the audio
-        await self.safe_edit_message(message, f"⬇️ Downloading **{track_info['title']}**...")
-        audio_path = await self.download_audio(provider, track_info)
-
-        if not audio_path:
-            await self.safe_edit_message(message, "❌ Failed to download audio.")
-            return False
-
-        # Process the audio
-        await self.safe_edit_message(message, f"🔄 Processing **{track_info['title']}**...")
+        is_premium = db.is_premium(user_id)
 
         # Get user preferences via effective settings
         eff_settings = db.get_effective_settings(user_id) if hasattr(db, "get_effective_settings") else {}
@@ -357,180 +331,284 @@ class DownloadHandler:
         preferred_format = eff_settings.get("preferred_format") or user.get("preferred_format", "mp3")
         if not isinstance(preferred_format, str):
             preferred_format = "mp3"
-        preferred_quality = eff_settings.get("preferred_quality") or user.get("preferred_quality", 320 if db.is_premium(user_id) else 64)
+        preferred_quality = eff_settings.get("preferred_quality") or user.get("preferred_quality", 320 if is_premium else 64)
         if isinstance(preferred_quality, (MagicMock if "MagicMock" in globals() else type(None))):
             preferred_quality = 320
 
-        # Convert if needed
-        try:
-            if not audio_path.endswith(f".{preferred_format}"):
-                base, _ = os.path.splitext(audio_path)
-                converted_path = f"{base}.{preferred_format}"
-                success = self.audio_processor.convert_audio(audio_path, converted_path, preferred_format, preferred_quality)
-
-                if success:
-                    try:
-                        os.remove(audio_path)
-                    except Exception:
-                        pass
-                    audio_path = converted_path
-                else:
-                    logger.error(f"Audio conversion failed for {audio_path}")
-                    await self.safe_edit_message(message, "❌ Failed to process audio.")
-                    return False
-        except Exception as e:
-            logger.error(f"Error during conversion: {e}")
-            await self.safe_edit_message(message, "❌ Error during audio conversion.")
+        # Centralized authorization check
+        auth = FeatureGate.authorize_download(user_id, provider=provider, format=preferred_format, is_batch=is_batch)
+        if not auth.allowed:
+            await self.safe_edit_message(
+                message,
+                f"{auth.reason}\n\n"
+                f"👤 **Your User ID:** `{user_id}`"
+            )
             return False
 
-        # Add metadata and thumbnail
-        thumbnail_path = None
-        if track_info.get("thumbnail"):
-            try:
-                thumbnail_path = f"data/thumbnails/{track_info['id']}.jpg"
-                async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(family=socket.AF_INET)) as session:
-                    async with session.get(track_info["thumbnail"]) as resp:
-                        if resp.status == 200:
-                            content = await resp.read()
-                            with open(thumbnail_path, "wb") as f:
-                                f.write(content)
-                        else:
-                            thumbnail_path = None
-            except Exception as e:
-                logger.warning(f"Could not download thumbnail: {e}")
-                thumbnail_path = None
-
-        if not thumbnail_path:
-            thumbnail_path = self.audio_processor.generate_thumbnail(track_info.get("title", ""), track_info.get("artist", ""))
-
-        # Add metadata (sync)
-        try:
-            self.audio_processor.add_metadata(audio_path, {
-                "title": track_info.get("title"),
-                "artist": track_info.get("artist"),
-                "album": track_info.get("album", "Unknown Album"),
-                "year": track_info.get("year", ""),
-                "genre": track_info.get("genre", "Music")
-            }, thumbnail_url=track_info.get("thumbnail"))
-        except Exception as e:
-            logger.warning(f"Failed to add metadata: {e}")
-
-        # Send audio file
-        await self.safe_edit_message(message, f"📤 Uploading **{track_info['title']}**...")
-
-        try:
-            caption = (
-                f"🎵 **{track_info['title']}**\n\n"
-                f"👤 **{track_info['artist']}**\n\n"
-                f"💿 **Album:** {track_info.get('album', 'Unknown')}\n\n"
-                f"📅 **Year:** {track_info.get('year', 'Unknown')}\n\n"
-                f"🎛️ **Format:** {preferred_format.upper()} {preferred_quality} kbps"
+        # Record queued attempt in DB
+        record_id = None
+        if hasattr(db, "record_download_attempt"):
+            record_id = db.record_download_attempt(
+                user_id=user_id,
+                provider=provider,
+                track=str(track_id),
+                status="queued",
+                format=preferred_format,
+                bitrate=preferred_quality if isinstance(preferred_quality, (int, float)) else 0,
+                premium=is_premium,
+                priority=is_premium,
             )
 
-            # Retry loop for send_audio handling FloodWait
-            uploaded = False
-            for attempt in range(3):
-                try:
-                    await self.bot.send_audio(
-                        chat_id=user_id,
-                        audio=audio_path,
-                        caption=caption,
-                        thumb=thumbnail_path,
-                        title=track_info["title"],
-                        performer=track_info["artist"],
-                        duration=track_info.get("duration", 0)
-                    )
-                    uploaded = True
-                    break
-                except pyrogram.errors.FloodWait as fw:
-                    logger.warning(f"FloodWait during send_audio: sleeping for {fw.value}s")
-                    await asyncio.sleep(fw.value + 1)
-                except Exception as e:
-                    logger.error(f"Failed to send audio (attempt {attempt + 1}): {e}\n{traceback.format_exc()}")
-                    if attempt == 2:
-                        await self.safe_edit_message(message, "❌ Failed to send audio.")
-                        return False
-                    await asyncio.sleep(2)
+        # Acquire download slot through priority queue
+        async with DownloadSlot(download_queue, is_premium=is_premium, priority=is_premium):
+            if record_id and hasattr(db, "update_download_record"):
+                db.update_download_record(record_id, status="processing")
 
-            if not uploaded:
+            # Get track info based on provider
+            track_info = await self.get_track_info(provider, track_id)
+            if not track_info:
+                if record_id and hasattr(db, "update_download_record"):
+                    db.update_download_record(record_id, status="failed", error="Could not retrieve track info")
+                await self.safe_edit_message(message, "❌ Could not retrieve track information.")
                 return False
 
-            # Record download
-            track_info["timestamp"] = getattr(message, "date", None) or datetime.now(timezone.utc).replace(tzinfo=None)
-            track_info["format"] = preferred_format
-            track_info["quality"] = preferred_quality
+            # Download the audio
+            await self.safe_edit_message(message, f"⬇️ Downloading **{track_info['title']}**...")
+            audio_path = await self.download_audio(provider, track_info)
 
-            user = db.get_user(user_id) if hasattr(db, "get_user") else {}
-            uname = (user or {}).get("username")
-            fname = (user or {}).get("first_name") or (user or {}).get("display_name")
+            if not audio_path:
+                if record_id and hasattr(db, "update_download_record"):
+                    db.update_download_record(record_id, status="failed", error="Failed to download audio stream")
+                await self.safe_edit_message(message, "❌ Failed to download audio.")
+                return False
 
-            if not uname and hasattr(self, "bot") and self.bot and hasattr(self.bot, "get_users"):
-                try:
-                    tg_user = await self.bot.get_users(user_id)
-                    if tg_user:
-                        if tg_user.username:
-                            uname = tg_user.username
-                        if tg_user.first_name and not fname:
-                            fname = tg_user.first_name
-                        if hasattr(db, "update_user"):
-                            updates = {}
-                            if tg_user.username:
-                                updates["username"] = tg_user.username
-                            if tg_user.first_name:
-                                updates["first_name"] = tg_user.first_name
-                                updates["display_name"] = tg_user.first_name
-                            if updates:
-                                db.update_user(user_id, updates)
-                except Exception:
-                    pass
+            # Process the audio
+            await self.safe_edit_message(message, f"🔄 Processing **{track_info['title']}**...")
 
-            if uname:
-                track_info["username"] = uname
-            if fname:
-                track_info["first_name"] = fname
-            
-            # Record the download in DB (best-effort; does not block UI)
+            # Convert if needed
             try:
-                db.record_download(user_id, track_info, username=uname)
-                # Log download
-                await self.logger.log_download(user_id, track_info, f"{preferred_format} {preferred_quality}", username=uname)
-            except Exception as e:
-                logger.warning(f"Failed to record download in DB for user {user_id}: {e}")
+                target_ext = AudioProfile.get_extension(preferred_format)
+                if not audio_path.endswith(target_ext):
+                    base, _ = os.path.splitext(audio_path)
+                    converted_path = f"{base}{target_ext}"
+                    success = self.audio_processor.convert_audio(audio_path, converted_path, preferred_format, preferred_quality)
 
-            if not is_batch:
-                # Edit the status/progress message to success only for single downloads
-                sent = await self.safe_edit_message(message, f"✅ Successfully downloaded **{track_info['title']}**!")
-
-                # Schedule deletion after 5 minutes only for single downloads
-                if sent:
-                    async def _delete_later(msg):
+                    if success:
                         try:
-                            await asyncio.sleep(300)
-                            await msg.delete()
+                            os.remove(audio_path)
                         except Exception:
                             pass
+                        audio_path = converted_path
+                    else:
+                        conv_err = getattr(self.audio_processor, "last_conversion_info", {}).get("error") or "Audio conversion failed"
+                        logger.error(f"Audio conversion failed for {audio_path}: {conv_err}")
+                        if record_id and hasattr(db, "update_download_record"):
+                            db.update_download_record(record_id, status="failed", error=conv_err)
+                        await self.safe_edit_message(message, "❌ Failed to process audio.")
+                        return False
+            except Exception as e:
+                logger.error(f"Error during conversion: {e}")
+                if record_id and hasattr(db, "update_download_record"):
+                    db.update_download_record(record_id, status="failed", error=f"Conversion error: {e}")
+                await self.safe_edit_message(message, "❌ Error during audio conversion.")
+                return False
 
+            # Check file size against Telegram limits
+            is_valid_size, size_mb = self.audio_processor.validate_file_size(audio_path)
+            if not is_valid_size:
+                max_mb = getattr(Config, "MAX_AUDIO_FILE_SIZE_MB", 50)
+                logger.warning(f"File size ({size_mb} MB) exceeds maximum upload limit ({max_mb} MB)")
+                if record_id and hasattr(db, "update_download_record"):
+                    db.update_download_record(record_id, status="failed", error=f"File size {size_mb} MB exceeds limit ({max_mb} MB)")
+                await self.safe_edit_message(
+                    message,
+                    f"❌ **File Size Limit Exceeded!**\n\n"
+                    f"The generated audio file is `{size_mb:.1f} MB`, which exceeds Telegram's `{max_mb} MB` upload limit.\n\n"
+                    f"💡 **Tip:** Try selecting a more compact format (e.g. MP3 320kbps or FLAC) in `/settings`."
+                )
+                try:
+                    os.remove(audio_path)
+                except Exception:
+                    pass
+                return False
+
+            # Add metadata and thumbnail
+            thumbnail_path = None
+            if track_info.get("thumbnail"):
+                try:
+                    thumbnail_path = f"data/thumbnails/{track_info['id']}.jpg"
+                    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(family=socket.AF_INET)) as session:
+                        async with session.get(track_info["thumbnail"]) as resp:
+                            if resp.status == 200:
+                                content = await resp.read()
+                                with open(thumbnail_path, "wb") as f:
+                                    f.write(content)
+                            else:
+                                thumbnail_path = None
+                except Exception as e:
+                    logger.warning(f"Could not download thumbnail: {e}")
+                    thumbnail_path = None
+
+            if not thumbnail_path:
+                thumbnail_path = self.audio_processor.generate_thumbnail(track_info.get("title", ""), track_info.get("artist", ""))
+
+            # Add metadata (sync)
+            try:
+                self.audio_processor.add_metadata(audio_path, {
+                    "title": track_info.get("title"),
+                    "artist": track_info.get("artist"),
+                    "album": track_info.get("album", "Unknown Album"),
+                    "year": track_info.get("year", ""),
+                    "genre": track_info.get("genre", "Music")
+                }, thumbnail_url=track_info.get("thumbnail"))
+            except Exception as e:
+                logger.warning(f"Failed to add metadata: {e}")
+
+            # Send audio file
+            await self.safe_edit_message(message, f"📤 Uploading **{track_info['title']}**...")
+
+            try:
+                quality_label = AudioProfile.format_quality_label(preferred_format, preferred_quality)
+                caption = (
+                    f"🎵 **{track_info['title']}**\n\n"
+                    f"👤 **{track_info['artist']}**\n\n"
+                    f"💿 **Album:** {track_info.get('album', 'Unknown')}\n\n"
+                    f"📅 **Year:** {track_info.get('year', 'Unknown')}\n\n"
+                    f"🎛️ **Format:** {preferred_format.upper()} ({quality_label})"
+                )
+
+                # Retry loop for send_audio handling FloodWait
+                uploaded = False
+                for attempt in range(3):
                     try:
-                        asyncio.create_task(_delete_later(sent))
-                    except RuntimeError:
+                        await self.bot.send_audio(
+                            chat_id=user_id,
+                            audio=audio_path,
+                            caption=caption,
+                            thumb=thumbnail_path,
+                            title=track_info["title"],
+                            performer=track_info["artist"],
+                            duration=track_info.get("duration", 0)
+                        )
+                        uploaded = True
+                        break
+                    except pyrogram.errors.FloodWait as fw:
+                        logger.warning(f"FloodWait during send_audio: sleeping for {fw.value}s")
+                        await asyncio.sleep(fw.value + 1)
+                    except Exception as e:
+                        logger.error(f"Failed to send audio (attempt {attempt + 1}): {e}\n{traceback.format_exc()}")
+                        if attempt == 2:
+                            if record_id and hasattr(db, "update_download_record"):
+                                db.update_download_record(record_id, status="failed", error=f"Send audio error: {e}")
+                            await self.safe_edit_message(message, "❌ Failed to send audio.")
+                            return False
+                        await asyncio.sleep(2)
+
+                if not uploaded:
+                    if record_id and hasattr(db, "update_download_record"):
+                        db.update_download_record(record_id, status="failed", error="Upload failed")
+                    return False
+
+                # Record download
+                track_info["timestamp"] = getattr(message, "date", None) or datetime.now(timezone.utc).replace(tzinfo=None)
+                track_info["format"] = preferred_format
+                track_info["quality"] = preferred_quality
+
+                user = db.get_user(user_id) if hasattr(db, "get_user") else {}
+                uname = (user or {}).get("username")
+                fname = (user or {}).get("first_name") or (user or {}).get("display_name")
+
+                if not uname and hasattr(self, "bot") and self.bot and hasattr(self.bot, "get_users"):
+                    try:
+                        tg_user = await self.bot.get_users(user_id)
+                        if tg_user:
+                            if tg_user.username:
+                                uname = tg_user.username
+                            if tg_user.first_name and not fname:
+                                fname = tg_user.first_name
+                            if hasattr(db, "update_user"):
+                                updates = {}
+                                if tg_user.username:
+                                    updates["username"] = tg_user.username
+                                if tg_user.first_name:
+                                    updates["first_name"] = tg_user.first_name
+                                    updates["display_name"] = tg_user.first_name
+                                if updates:
+                                    db.update_user(user_id, updates)
+                    except Exception:
                         pass
 
-            return True
+                if uname:
+                    track_info["username"] = uname
+                if fname:
+                    track_info["first_name"] = fname
 
-        except Exception as e:
-            logger.error(f"Failed to send audio: {e}\n{traceback.format_exc()}")
-            await self.safe_edit_message(message, "❌ Failed to send audio.")
-            return False
+                # Calculate file size
+                file_size = 0
+                try:
+                    if audio_path and os.path.exists(audio_path):
+                        file_size = os.path.getsize(audio_path)
+                except Exception:
+                    file_size = 0
 
-        finally:
-            # Clean up files
-            try:
-                if audio_path and os.path.exists(audio_path):
-                    os.remove(audio_path)
-                if thumbnail_path and os.path.exists(thumbnail_path):
-                    os.remove(thumbnail_path)
+                # Update download lifecycle record to success
+                conv_info = getattr(self.audio_processor, "last_conversion_info", {}) or {}
+                if record_id and hasattr(db, "update_download_record"):
+                    db.update_download_record(
+                        record_id,
+                        status="success",
+                        file_size=file_size,
+                        duration=track_info.get("duration", 0),
+                        source_quality=conv_info.get("source_quality"),
+                        conversion_duration=conv_info.get("conversion_duration_sec"),
+                        format_used=preferred_format,
+                        quality=preferred_quality
+                    )
+                
+                # Record the download in DB (best-effort; does not block UI)
+                try:
+                    db.record_download(user_id, track_info, username=uname)
+                    # Log download
+                    await self.logger.log_download(user_id, track_info, f"{preferred_format} {preferred_quality}", username=uname)
+                except Exception as e:
+                    logger.warning(f"Failed to record download in DB for user {user_id}: {e}")
+
+                if not is_batch:
+                    # Edit the status/progress message to success only for single downloads
+                    sent = await self.safe_edit_message(message, f"✅ Successfully downloaded **{track_info['title']}**!")
+
+                    # Schedule deletion after 5 minutes only for single downloads
+                    if sent:
+                        async def _delete_later(msg):
+                            try:
+                                await asyncio.sleep(300)
+                                await msg.delete()
+                            except Exception:
+                                pass
+
+                        try:
+                            asyncio.create_task(_delete_later(sent))
+                        except RuntimeError:
+                            pass
+
+                return True
+
             except Exception as e:
-                logger.error(f"Failed to clean up files: {e}")
+                logger.error(f"Failed to send audio: {e}\n{traceback.format_exc()}")
+                if record_id and hasattr(db, "update_download_record"):
+                    db.update_download_record(record_id, status="failed", error=str(e))
+                await self.safe_edit_message(message, "❌ Failed to send audio.")
+                return False
+
+            finally:
+                # Clean up files
+                try:
+                    if audio_path and os.path.exists(audio_path):
+                        os.remove(audio_path)
+                    if thumbnail_path and os.path.exists(thumbnail_path):
+                        os.remove(thumbnail_path)
+                except Exception as e:
+                    logger.error(f"Failed to clean up files: {e}")
 
     def extract_spotify_id(self, url_or_id):
         """Extract Spotify ID from various URL formats"""
@@ -586,25 +664,15 @@ class DownloadHandler:
             provider = parts[1]
             track_id = parts[2]
 
-            # Check download quota for free/premium users
-            can_download, reason = db.can_download(user_id)
-            if not can_download:
+            # Centralized authorization check
+            auth = FeatureGate.authorize_download(user_id, provider=provider)
+            if not auth.allowed:
                 try:
-                    await callback_query.answer(f"❌ {reason}", show_alert=True)
+                    await callback_query.answer("❌ " + auth.reason.replace("*", "").replace("`", "")[:180], show_alert=True)
                 except Exception:
                     pass
                 try:
-                    user = db.get_user(user_id) or {}
-                    await self.bot.send_message(
-                        chat_id=user_id,
-                        text=(
-                            f"❌ **Download Limit Reached!**\n\n"
-                            f"📊 Used: {user.get('downloads_today', 0)}/{Config.FREE_USER_DAILY_LIMIT} free downloads today.\n\n"
-                            f"💎 Upgrade to Premium to unlock unlimited high-quality downloads & album support!\n"
-                            f"Contact: @icecube9608\n\n"
-                            f"👤 **Your User ID:** `{user_id}`"
-                        )
-                    )
+                    await self.bot.send_message(chat_id=user_id, text=auth.reason)
                 except Exception:
                     pass
                 return
@@ -630,13 +698,12 @@ class DownloadHandler:
     # === New methods for album/playlist support ===
     async def download_album(self, provider, album_id_or_url, user_id, message):
         """Download multiple tracks from an album/playlist. Returns True if at least one track downloaded (Premium Only)."""
-        if not db.is_premium(user_id):
+        # Centralized authorization check
+        auth = FeatureGate.authorize_download(user_id, provider=provider, is_batch=True)
+        if not auth.allowed:
             await self.safe_edit_message(
                 message,
-                f"❌ **Premium Required!**\n\n"
-                f"📥 Album and playlist downloads are available for **Premium users only**.\n\n"
-                f"💎 Upgrade to Premium for unlimited downloads!\n"
-                f"Contact: @icecube9608\n\n"
+                f"{auth.reason}\n\n"
                 f"👤 **Your User ID:** `{user_id}`"
             )
             return False
