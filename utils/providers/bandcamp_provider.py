@@ -22,7 +22,7 @@ class BandcampProvider(BaseProvider):
         super().__init__(
             provider_id="bandcamp",
             display_name="Bandcamp",
-            emoji="⛺",
+            emoji="",
             can_search=True,
             can_track=True,
             can_album=True,

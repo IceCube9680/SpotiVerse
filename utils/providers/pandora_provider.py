@@ -20,7 +20,7 @@ class PandoraProvider(BaseProvider):
         super().__init__(
             provider_id="pandora",
             display_name="Pandora",
-            emoji="📻",
+            emoji="",
             can_search=True,
             can_track=True,
             can_album=True,

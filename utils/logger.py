@@ -139,12 +139,15 @@ class BotLogger:
             else:
                 user_line = "**User:** Unknown"
 
+            from utils.audio_formats import format_audio_quality
+            clean_format = format_audio_quality(format_used)
+
             message = (
                 f"**Download Recorded**\n"
                 f"{user_line}\n"
                 f"**Track:** {title}\n"
                 f"**Artist:** {artist}\n"
-                f"**Format:** {format_used}\n"
+                f"**Format:** {clean_format}\n"
             )
             if timestamp:
                 message += f"**Time:** {timestamp}\n"

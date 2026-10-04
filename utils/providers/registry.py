@@ -21,18 +21,21 @@ from utils.providers.pandora_provider import PandoraProvider
 from utils.providers.archive_provider import ArchiveProvider
 from utils.providers.bandcamp_provider import BandcampProvider
 
+from utils.branding import get_provider_display_name, get_provider_branding
+
 logger = logging.getLogger(__name__)
 
 class ProviderInfo:
     """Compatibility wrapper for provider metadata and capabilities"""
-    def __init__(self, provider_id: str, display_name: str, emoji: str,
+    def __init__(self, provider_id: str, display_name: str = "", emoji: str = "",
                  can_search: bool = True, can_track: bool = True,
                  can_album: bool = True, can_playlist: bool = True,
                  can_download: bool = True, is_lossless_source: bool = False,
                  instance: Optional[BaseProvider] = None):
         self.id = provider_id.lower().strip()
-        self.display_name = display_name
+        self.display_name = display_name or get_provider_display_name(self.id)
         self.emoji = emoji
+        self.branding = get_provider_branding(self.id)
         self.can_search = can_search
         self.can_track = can_track
         self.can_album = can_album
@@ -92,19 +95,19 @@ class ProviderRegistry:
 
     # Provider metadata registry (wrapped with ProviderInfo for 100% backward compatibility)
     _PROVIDERS: Dict[str, ProviderInfo] = {
-        "spotify": ProviderInfo("spotify", "Spotify", "🟢", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["spotify"]),
-        "youtube": ProviderInfo("youtube", "YouTube", "🔴", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["youtube"]),
-        "youtubemusic": ProviderInfo("youtubemusic", "YouTube Music", "🔴", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["youtubemusic"]),
-        "jiosaavn": ProviderInfo("jiosaavn", "JioSaavn", "🟢", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["jiosaavn"]),
-        "soundcloud": ProviderInfo("soundcloud", "SoundCloud", "🟠", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["soundcloud"]),
-        "deezer": ProviderInfo("deezer", "Deezer", "🟣", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["deezer"]),
-        "applemusic": ProviderInfo("applemusic", "Apple Music", "🍎", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["applemusic"]),
-        "tidal": ProviderInfo("tidal", "TIDAL", "⬛", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, is_lossless_source=True, instance=_INSTANCES["tidal"]),
-        "qobuz": ProviderInfo("qobuz", "Qobuz", "🔷", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, is_lossless_source=True, instance=_INSTANCES["qobuz"]),
-        "amazonmusic": ProviderInfo("amazonmusic", "Amazon Music", "📦", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["amazonmusic"]),
-        "pandora": ProviderInfo("pandora", "Pandora", "📻", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["pandora"]),
-        "archive": ProviderInfo("archive", "Internet Archive", "🏛️", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, is_lossless_source=True, instance=_INSTANCES["archive"]),
-        "bandcamp": ProviderInfo("bandcamp", "Bandcamp", "⛺", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, is_lossless_source=True, instance=_INSTANCES["bandcamp"]),
+        "spotify": ProviderInfo("spotify", "Spotify", "", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["spotify"]),
+        "youtube": ProviderInfo("youtube", "YouTube", "", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["youtube"]),
+        "youtubemusic": ProviderInfo("youtubemusic", "YouTube Music", "", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["youtubemusic"]),
+        "jiosaavn": ProviderInfo("jiosaavn", "JioSaavn", "", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["jiosaavn"]),
+        "soundcloud": ProviderInfo("soundcloud", "SoundCloud", "", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["soundcloud"]),
+        "deezer": ProviderInfo("deezer", "Deezer", "", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["deezer"]),
+        "applemusic": ProviderInfo("applemusic", "Apple Music", "", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["applemusic"]),
+        "tidal": ProviderInfo("tidal", "TIDAL", "", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, is_lossless_source=True, instance=_INSTANCES["tidal"]),
+        "qobuz": ProviderInfo("qobuz", "Qobuz", "", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, is_lossless_source=True, instance=_INSTANCES["qobuz"]),
+        "amazonmusic": ProviderInfo("amazonmusic", "Amazon Music", "", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["amazonmusic"]),
+        "pandora": ProviderInfo("pandora", "Pandora", "", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, instance=_INSTANCES["pandora"]),
+        "archive": ProviderInfo("archive", "Internet Archive", "", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, is_lossless_source=True, instance=_INSTANCES["archive"]),
+        "bandcamp": ProviderInfo("bandcamp", "Bandcamp", "", can_search=True, can_track=True, can_album=True, can_playlist=True, can_download=True, is_lossless_source=True, instance=_INSTANCES["bandcamp"]),
     }
 
     # Aliases
@@ -148,10 +151,7 @@ class ProviderRegistry:
 
     @classmethod
     def get_display_name(cls, provider: str) -> str:
-        prov = cls.get_provider(provider)
-        if prov:
-            return prov.display_name
-        return str(provider).title()
+        return get_provider_display_name(provider)
 
     @classmethod
     def get_provider(cls, provider: str) -> Optional[ProviderInfo]:

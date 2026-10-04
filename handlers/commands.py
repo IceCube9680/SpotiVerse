@@ -3,7 +3,7 @@ import os
 import logging
 import asyncio
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Union, List, Dict, Any, Tuple
 from pyrogram.errors import MessageNotModified
 from pyrogram import Client, filters
 from pyrogram.types import (
@@ -22,7 +22,7 @@ from utils.providers import ProviderRegistry
 from utils.feature_gates import FeatureGate
 from utils.payment import payment_manager
 from utils.admin_security import admin_security
-from utils.audio_formats import AudioProfile, AudioFormat, DownloadCompatibilityEngine
+from utils.audio_formats import AudioProfile, AudioFormat, DownloadCompatibilityEngine, format_audio_quality
 from utils.ui_helpers import safe_answer_callback, safe_edit_or_reply
 from handlers.search import SearchHandler
 from handlers.downloads import DownloadHandler
@@ -84,7 +84,75 @@ def _format_time_remaining(expiry_dt: datetime) -> str:
     return f"{hours} hr(s) remaining"
 
 
-def _build_start_keyboard(user_id: int = 0) -> InlineKeyboardMarkup:
+def format_supported_platforms() -> str:
+    """Dynamically format supported platforms list from ProviderRegistry."""
+    providers = [p.display_name for p in ProviderRegistry.get_all_providers() if p.enabled]
+    if not providers:
+        providers = [p.display_name for p in ProviderRegistry.get_all_providers()]
+
+    lines = []
+    chunk_size = 4
+    for i in range(0, len(providers), chunk_size):
+        chunk = providers[i:i + chunk_size]
+        lines.append(" ".join(f"• **{name}**" for name in chunk))
+    return "\n".join(lines)
+
+
+def build_start_menu(user: Optional[dict] = None, user_id: int = 0, first_name: Optional[str] = None) -> str:
+    """
+    Build the complete Start Menu welcome text.
+    Single source of truth for both /start command and Back navigation.
+    """
+    if user_id and not user:
+        user = db.get_user(user_id) or {}
+    elif not user:
+        user = {}
+
+    uid = user_id or user.get("user_id") or user.get("telegram_id") or 0
+    name = first_name or user.get("first_name") or user.get("display_name") or "there"
+
+    prem_mode = db.get_premium_mode()
+    is_premium = db.is_premium(uid) if uid else False
+
+    platforms_text = format_supported_platforms()
+
+    if not prem_mode:
+        return (
+            f"👋 Hello **{name}**!\n\n"
+            "Welcome to **SpotiVerse Bot** — High-Performance Music Downloader!\n\n"
+            "I can search and download high-quality audio from:\n"
+            f"{platforms_text}\n\n"
+            "**Your Status:** ✨ All Features Unlocked (Public Mode)\n"
+            "**Downloads:** Unlimited ♾️ (No daily limit)\n\n"
+            "Enjoy your music downloads!"
+        )
+    else:
+        text = (
+            f"👋 Hello **{name}**!\n\n"
+            "Welcome to **SpotiVerse Bot** — Studio-Grade Music Downloader!\n\n"
+            "Supported platforms:\n"
+            f"{platforms_text}\n\n"
+            f"**Membership:** `{'👑 Premium Member' if is_premium else '👤 Free Member'}`\n"
+        )
+        if is_premium:
+            until_dt = _parse_datetime(user.get("premium_until"))
+            rem_str = _format_time_remaining(until_dt) if not user.get("lifetime_premium") else "Lifetime Access ♾️"
+            text += f"**Validity:** `{rem_str}`\n**Downloads:** Unlimited ♾️ (Priority Queue Active)\n\nReady to download your favorite songs & albums!"
+        else:
+            used_today = user.get("downloads_today", 0) if user else 0
+            text += (
+                f"**Daily Limit:** `{used_today}/{Config.FREE_USER_DAILY_LIMIT}` downloads used today\n\n"
+                "🔍 Search & download tracks with `/search <song name>`\n"
+                "👑 Upgrade to Premium for **Unlimited Downloads**, **FLAC Audio**, and **Full Playlist Support**!"
+            )
+        return text
+
+
+build_start_menu_text = build_start_menu  # Alias for explicit text building
+
+
+def build_start_keyboard(user_id: int = 0) -> InlineKeyboardMarkup:
+    """Build the complete Start Menu inline keyboard."""
     kb = [
         [InlineKeyboardButton("📥 Download Music", callback_data="menu_download")],
         [InlineKeyboardButton("👑 Premium Plans", callback_data="view_plans"),
@@ -95,6 +163,50 @@ def _build_start_keyboard(user_id: int = 0) -> InlineKeyboardMarkup:
     if user_id and Config.is_owner(user_id):
         kb.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="adm_main")])
     return InlineKeyboardMarkup(kb)
+
+
+_build_start_keyboard = build_start_keyboard  # Backward-compatibility alias
+
+
+async def render_start_menu(
+    message_or_cb: Union[Message, CallbackQuery],
+    user_id: int = 0,
+    first_name: Optional[str] = None,
+    client: Optional[Client] = None,
+    edit: bool = True
+) -> Optional[Message]:
+    """
+    Renders (sends or edits) the unified Start Menu for a command message or callback query.
+    Ensures a single source of truth across /start and all Back navigation paths.
+    """
+    from_user = getattr(message_or_cb, "from_user", None)
+    if not user_id and from_user:
+        user_id = from_user.id
+
+    rec = db.get_user(user_id) if user_id else {}
+    if not rec and from_user:
+        rec = {"user_id": user_id, "first_name": getattr(from_user, "first_name", None)}
+
+    resolved_first_name = first_name
+    if not resolved_first_name and isinstance(message_or_cb, CallbackQuery):
+        resolved_first_name = _display_name_from_callback(message_or_cb)
+    elif not resolved_first_name and from_user:
+        resolved_first_name = _display_name_from_user_obj(from_user)
+    if not resolved_first_name or resolved_first_name == "there":
+        resolved_first_name = (rec.get("first_name") if rec else None) or (rec.get("display_name") if rec else None) or "there"
+
+    text = build_start_menu(user=rec, user_id=user_id, first_name=resolved_first_name)
+    markup = build_start_keyboard(user_id=user_id)
+
+    if isinstance(message_or_cb, CallbackQuery):
+        return await safe_edit_or_reply(message_or_cb, text, reply_markup=markup, client=client)
+    else:
+        if not edit and hasattr(message_or_cb, "reply_text"):
+            try:
+                return await message_or_cb.reply_text(text, reply_markup=markup)
+            except Exception as e:
+                logger.debug(f"reply_text failed in render_start_menu: {e}")
+        return await safe_edit_or_reply(message_or_cb, text, reply_markup=markup, client=client)
 
 
 def _build_premium_markup() -> InlineKeyboardMarkup:
@@ -534,6 +646,15 @@ class CommandsBinder:
     async def _on_callback_wrapper(self, client: Client, callback_query: CallbackQuery):
         await self.handle_callback(client, callback_query)
 
+    async def render_start_menu(self, message_or_cb: Union[Message, CallbackQuery], user_id: int = 0, first_name: Optional[str] = None, client: Optional[Client] = None, edit: bool = True) -> Optional[Message]:
+        return await render_start_menu(message_or_cb, user_id=user_id, first_name=first_name, client=client or self.app, edit=edit)
+
+    def build_start_menu(self, user: Optional[dict] = None, user_id: int = 0, first_name: Optional[str] = None) -> str:
+        return build_start_menu(user=user, user_id=user_id, first_name=first_name)
+
+    def build_start_keyboard(self, user_id: int = 0) -> InlineKeyboardMarkup:
+        return build_start_keyboard(user_id=user_id)
+
     # -------------------------
     # Command implementations
     # -------------------------
@@ -564,46 +685,7 @@ class CommandsBinder:
         except Exception:
             pass
 
-        prem_mode = db.get_premium_mode()
-        is_premium = db.is_premium(user_id)
-        start_kb = _build_start_keyboard(user_id)
-
-        if not prem_mode:
-            welcome_text = (
-                f"👋 Hello **{first_name}**!\n\n"
-                "Welcome to **SpotiVerse Bot** — High-Performance Music Downloader!\n\n"
-                "I can search and download high-quality audio from:\n"
-                "• **Spotify** • **YouTube** • **JioSaavn** • **SoundCloud** • **Deezer**\n\n"
-                "**Your Status:** ✨ All Features Unlocked (Public Mode)\n"
-                "**Downloads:** Unlimited ♾️ (No daily limit)\n\n"
-                "Enjoy your music downloads!"
-            )
-        else:
-            welcome_text = (
-                f"👋 Hello **{first_name}**!\n\n"
-                "Welcome to **SpotiVerse Bot** — Studio-Grade Music Downloader!\n\n"
-                "Supported platforms:\n"
-                "• **Spotify** • **YouTube** • **JioSaavn** • **SoundCloud** • **Deezer**\n\n"
-                f"**Membership:** `{'👑 Premium Member' if is_premium else '👤 Free Member'}`\n"
-            )
-            if is_premium:
-                until_dt = _parse_datetime(rec.get("premium_until"))
-                rem_str = _format_time_remaining(until_dt) if not rec.get("lifetime_premium") else "Lifetime Access ♾️"
-                welcome_text += f"**Validity:** `{rem_str}`\n**Downloads:** Unlimited ♾️ (Priority Queue Active)\n\nReady to download your favorite songs & albums!"
-            else:
-                welcome_text += (
-                    f"**Daily Limit:** `{rec.get('downloads_today', 0)}/{Config.FREE_USER_DAILY_LIMIT}` downloads used today\n\n"
-                    "🔍 Search & download tracks with `/search <song name>`\n"
-                    "👑 Upgrade to Premium for **Unlimited Downloads**, **FLAC Audio**, and **Full Playlist Support**!"
-                )
-
-        try:
-            await message.reply_text(welcome_text, reply_markup=start_kb)
-        except Exception:
-            try:
-                await message.edit_text(welcome_text, reply_markup=start_kb)
-            except Exception as e:
-                logger.warning(f"Failed to deliver welcome message: {e}")
+        await self.render_start_menu(message, user_id=user_id, first_name=first_name, client=client, edit=False)
 
     async def search_command(self, client: Client, message: Message):
         if not message.from_user:
@@ -915,10 +997,13 @@ class CommandsBinder:
         else:
             join_str = str(join_d) if join_d else 'Unknown'
 
+        pref_fmt = user.get('preferred_format', 'mp3')
+        pref_q = user.get('preferred_quality', 320)
+        fmt_display = format_audio_quality(pref_fmt, pref_q)
+
         info_text += (
             f"**Total Downloads:** {user.get('total_downloads', 0)}\n"
-            f"**Preferred Format:** {user.get('preferred_format', 'mp3')}\n"
-            f"**Preferred Quality:** {user.get('preferred_quality', 64)}\n"
+            f"**Preferred Format:** {fmt_display}\n"
             f"**Join Date:** {join_str}\n"
         )
         await message.reply_text(info_text)
@@ -1420,35 +1505,7 @@ class CommandsBinder:
         # 3. Main Menu / Back
         if data in ("back", "main_menu"):
             await safe_answer_callback(callback_query)
-            display_name = _display_name_from_callback(callback_query)
-            rec = db.get_user(user_id) or {}
-            prem_mode = db.get_premium_mode()
-            is_premium = db.is_premium(user_id)
-            start_kb = _build_start_keyboard(user_id)
-
-            if not prem_mode:
-                text = (
-                    f"👋 Hello **{display_name}**!\n\n"
-                    "Welcome to **SpotiVerse Bot**!\n\n"
-                    "I can download high-quality audio from:\n"
-                    "• **Spotify** • **YouTube** • **JioSaavn** • **SoundCloud** • **Deezer**\n\n"
-                    "**Your Status:** ✨ All Features Unlocked (Public Mode)\n"
-                    "**Downloads:** Unlimited ♾️ (No daily limit)"
-                )
-            else:
-                text = (
-                    f"👋 Hello **{display_name}**!\n\n"
-                    "Welcome to **SpotiVerse Bot**!\n\n"
-                    f"**Your Status:** {'👑 Premium Member' if is_premium else '👤 Free Member'}\n"
-                )
-                if is_premium:
-                    until_dt = _parse_datetime(rec.get("premium_until"))
-                    rem_str = _format_time_remaining(until_dt) if not rec.get("lifetime_premium") else "Lifetime Access ♾️"
-                    text += f"**Validity:** `{rem_str}`\n**Downloads:** Unlimited ♾️"
-                else:
-                    text += f"**Free Limits:** {rec.get('downloads_today', 0)}/{Config.FREE_USER_DAILY_LIMIT} downloads today\n\n👑 Upgrade to premium for unlimited downloads & FLAC audio!"
-
-            await safe_edit_or_reply(callback_query, text, reply_markup=start_kb, client=self.app)
+            await self.render_start_menu(callback_query, user_id=user_id, client=self.app)
             return
 
         # 4. Premium info callback

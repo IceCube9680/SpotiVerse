@@ -19,7 +19,7 @@ class YouTubeProvider(BaseProvider):
     - Multi-client fallbacks (android, tv, web, ios)
     - Direct audio stream resolution
     """
-    def __init__(self, provider_id: str = "youtube", display_name: str = "YouTube", emoji: str = "🔴"):
+    def __init__(self, provider_id: str = "youtube", display_name: str = "YouTube", emoji: str = ""):
         super().__init__(
             provider_id=provider_id,
             display_name=display_name,
@@ -199,5 +199,5 @@ class YouTubeMusicProvider(YouTubeProvider):
         super().__init__(
             provider_id="youtubemusic",
             display_name="YouTube Music",
-            emoji="🔴"
+            emoji=""
         )

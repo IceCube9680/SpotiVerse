@@ -28,7 +28,7 @@ class SpotifyProvider(BaseProvider):
         super().__init__(
             provider_id="spotify",
             display_name="Spotify",
-            emoji="🟢",
+            emoji="",
             can_search=True,
             can_track=True,
             can_album=True,

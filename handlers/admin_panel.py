@@ -14,6 +14,7 @@ from utils.providers import ProviderRegistry
 from utils.feature_gates import FeatureGate
 from utils.admin_security import admin_security
 from utils.ui_helpers import safe_answer_callback, safe_edit_or_reply
+from utils.audio_formats import format_audio_quality
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,7 @@ class AdminPanelHandler:
         kb = []
         for p in provs:
             icon = "🟢 ON" if p.enabled else "🔴 OFF"
-            kb.append([InlineKeyboardButton(f"{p.emoji} {p.display_name}: {icon}", callback_data=f"adm_toggle_prov_{p.id}")])
+            kb.append([InlineKeyboardButton(f"{p.display_name}: {icon}", callback_data=f"adm_toggle_prov_{p.id}")])
         kb.append([InlineKeyboardButton("⬅️ Back", callback_data="adm_main")])
         return InlineKeyboardMarkup(kb)
 
@@ -328,7 +329,7 @@ class AdminPanelHandler:
             f"**Daily Limit:** `{'Unlimited ♾️' if is_prem else Config.FREE_USER_DAILY_LIMIT}`\n"
             f"**Total Downloads:** `{user.get('total_downloads', 0):,}`\n"
             f"**Banned:** `{'🔴 Yes' if user.get('banned') else '🟢 No'}`\n"
-            f"**Preferred Format:** `{user.get('preferred_format', 'mp3').upper()} {user.get('preferred_quality', 320)}`"
+            f"**Preferred Format:** `{format_audio_quality(user.get('preferred_format', 'mp3'), user.get('preferred_quality', 320))}`"
         )
         back_cb = "adm_users_menu" if from_menu == "users" else "adm_prem_menu"
         kb = [
@@ -358,6 +359,12 @@ class AdminPanelHandler:
             return
 
         # Main Navigation
+        if data in ("main_menu", "back"):
+            await safe_answer_callback(callback_query)
+            from handlers.commands import render_start_menu
+            await render_start_menu(callback_query, user_id=user_id, client=self.bot)
+            return
+
         if data == "adm_main":
             await safe_answer_callback(callback_query)
             await self.show_main_menu(callback_query)
@@ -393,7 +400,8 @@ class AdminPanelHandler:
         if data.startswith("adm_toggle_prov_"):
             prov = data.replace("adm_toggle_prov_", "")
             new_state = ProviderRegistry.toggle(prov, admin_id=user_id)
-            await safe_answer_callback(callback_query, f"{prov.capitalize()} is now {'ENABLED 🟢' if new_state else 'DISABLED 🔴'}", show_alert=True)
+            prov_name = ProviderRegistry.get_display_name(prov)
+            await safe_answer_callback(callback_query, f"{prov_name} is now {'ENABLED 🟢' if new_state else 'DISABLED 🔴'}", show_alert=True)
             await self.show_providers(callback_query)
             return
 

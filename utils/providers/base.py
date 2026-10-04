@@ -116,13 +116,15 @@ class BaseProvider(abc.ABC):
     Standardized Abstract Base Class for Music Providers.
     Separates concerns across Metadata, Search, Audio Source Resolution, and Downloading.
     """
-    def __init__(self, provider_id: str, display_name: str, emoji: str,
+    def __init__(self, provider_id: str, display_name: str = "", emoji: str = "",
                  can_search: bool = True, can_track: bool = True,
                  can_album: bool = True, can_playlist: bool = True,
                  can_download: bool = True, is_lossless_source: bool = False):
         self.provider_id = provider_id.lower().strip()
-        self.display_name = display_name
+        from utils.branding import get_provider_display_name, get_provider_branding
+        self.display_name = display_name or get_provider_display_name(self.provider_id)
         self.emoji = emoji
+        self.branding = get_provider_branding(self.provider_id)
         self.can_search = can_search
         self.can_track = can_track
         self.can_album = can_album

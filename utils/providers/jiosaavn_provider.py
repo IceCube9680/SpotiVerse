@@ -23,7 +23,7 @@ class JioSaavnProvider(BaseProvider):
         super().__init__(
             provider_id="jiosaavn",
             display_name="JioSaavn",
-            emoji="🟢",
+            emoji="",
             can_search=True,
             can_track=True,
             can_album=True,

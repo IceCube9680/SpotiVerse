@@ -110,7 +110,7 @@ class SearchHandler:
     async def search_spotify(self, query, limit=10):
         """Search Spotify for tracks with fallback handling"""
         sp_client = self.get_spotify_client()
-        if sp_client and not self._use_anonymous_token:
+        if sp_client:
             try:
                 try:
                     loop = asyncio.get_running_loop()
@@ -153,6 +153,9 @@ class SearchHandler:
                 if "429" in serr or "rate" in serr.lower() or "too many" in serr.lower():
                     logger.warning("Spotify API rate limit encountered. Cooldown for 5 minutes.")
                     self._spotify_rate_limited_until = time.time() + 300
+                elif "403" in serr or "premium" in serr.lower():
+                    logger.warning(f"Spotify credentials require premium ({e}). Falling back to multi-provider search.")
+                    self._use_anonymous_token = True
                 else:
                     logger.error(f"Spotify search error: {e}")
 

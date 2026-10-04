@@ -23,7 +23,7 @@ class ArchiveProvider(BaseProvider):
         super().__init__(
             provider_id="archive",
             display_name="Internet Archive",
-            emoji="🏛️",
+            emoji="",
             can_search=True,
             can_track=True,
             can_album=True,

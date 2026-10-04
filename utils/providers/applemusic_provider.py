@@ -23,7 +23,7 @@ class AppleMusicProvider(BaseProvider):
         super().__init__(
             provider_id="applemusic",
             display_name="Apple Music",
-            emoji="🍎",
+            emoji="",
             can_search=True,
             can_track=True,
             can_album=True,

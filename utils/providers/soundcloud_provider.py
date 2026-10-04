@@ -20,7 +20,7 @@ class SoundCloudProvider(BaseProvider):
         super().__init__(
             provider_id="soundcloud",
             display_name="SoundCloud",
-            emoji="🟠",
+            emoji="",
             can_search=True,
             can_track=True,
             can_album=True,

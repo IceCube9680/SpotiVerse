@@ -22,7 +22,7 @@ class QobuzProvider(BaseProvider):
         super().__init__(
             provider_id="qobuz",
             display_name="Qobuz",
-            emoji="🔷",
+            emoji="",
             can_search=True,
             can_track=True,
             can_album=True,

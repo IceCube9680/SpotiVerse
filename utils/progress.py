@@ -215,12 +215,9 @@ class ProgressTracker:
             lines.append(f"⏱️ **Duration:** `{dur_str}`")
 
         if self.format_name:
-            fmt_upper = str(self.format_name).upper()
-            if self.quality and str(self.quality) not in ("0", ""):
-                q_str = f" ({self.quality}kbps)" if str(self.quality).isdigit() else f" ({self.quality})"
-            else:
-                q_str = ""
-            lines.append(f"🎧 **Format:** `{fmt_upper}{q_str}`")
+            from utils.audio_formats import format_audio_quality
+            fmt_display = format_audio_quality(self.format_name, self.quality)
+            lines.append(f"🎧 **Format:** `{fmt_display}`")
 
         if self.year:
             lines.append(f"📅 **Year:** `{self.year}`")

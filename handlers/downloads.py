@@ -8,7 +8,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQ
 from config import Config
 from utils.db import db
 from utils.audio import AudioProcessor
-from utils.audio_formats import AudioProfile, AudioFormat
+from utils.audio_formats import AudioProfile, AudioFormat, format_audio_quality
 from utils.providers import ProviderRegistry
 from utils.logger import BotLogger
 from utils.ytdlp_utils import get_ytdlp_options
@@ -243,7 +243,8 @@ class DownloadHandler:
                                     thumb_img = sdata.get('image', '')
                                     thumb = thumb_img.replace('50x50', '500x500').replace('150x150', '500x500') if thumb_img else None
                                     more_info = sdata.get('more_info', {}) or {}
-                                    stream_url = more_info.get('encrypted_media_url') or sdata.get('media_preview_url')
+                                    raw_stream = sdata.get('media_preview_url') or more_info.get('encrypted_media_url')
+                                    stream_url = raw_stream if (raw_stream and str(raw_stream).startswith("http")) else None
                                     return {
                                         "id": track_id,
                                         "title": sdata.get('song') or sdata.get('title') or "Unknown Track",
@@ -296,19 +297,19 @@ class DownloadHandler:
             download_url = None
             canonical_prov = ProviderRegistry.get_canonical_id(provider)
 
-            if canonical_prov in ["youtube", "yt", "ytmusic", "soundcloud", "bandcamp", "archive"] and track_info.get("webpage_url"):
+            if canonical_prov in ["youtube", "yt", "ytmusic", "soundcloud", "bandcamp", "archive"] and track_info.get("webpage_url") and str(track_info.get("webpage_url")).startswith("http"):
                 download_url = track_info.get("webpage_url")
-            elif track_info.get("stream_url"):
+            elif track_info.get("stream_url") and str(track_info.get("stream_url")).startswith("http"):
                 download_url = track_info.get("stream_url")
             else:
                 matched_source = await ProviderRegistry.resolve_audio_source(
                     track_info,
                     preferred_provider=preferred_source_provider
                 )
-                if matched_source and matched_source.source_url:
+                if matched_source and matched_source.source_url and str(matched_source.source_url).startswith("http"):
                     download_url = matched_source.source_url
 
-            if not download_url:
+            if not download_url or not str(download_url).startswith("http"):
                 query = f"{track_info.get('title', '')} - {track_info.get('artist', '')} audio"
                 def _search_yt():
                     opts = get_ytdlp_options({'quiet': True, 'skip_download': True, 'noplaylist': True, 'default_search': 'ytsearch1'})
@@ -371,9 +372,20 @@ class DownloadHandler:
                         },
                         player_clients=['mweb', 'android', 'ios', 'web']
                     )
-                    with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                        info = ydl.extract_info(download_url, download=True)
-                        return ydl.prepare_filename(info)
+                    try:
+                        with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                            info = ydl.extract_info(download_url, download=True)
+                            return ydl.prepare_filename(info)
+                    except Exception as fb_err:
+                        logger.warning(f"Direct stream download failed: {fb_err}. Trying YouTube search fallback...")
+                        yt_query = f"ytsearch1:{track_info.get('title', '')} {track_info.get('artist', '')} audio"
+                        with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                            info = ydl.extract_info(yt_query, download=True)
+                            if info and 'entries' in info and info['entries']:
+                                return ydl.prepare_filename(info['entries'][0])
+                            elif info:
+                                return ydl.prepare_filename(info)
+                            raise fb_err
             
             return await loop.run_in_executor(None, _download)
         except Exception as e:
@@ -561,13 +573,13 @@ class DownloadHandler:
                 await progress_tracker.update_upload(current, total)
 
             try:
-                quality_label = AudioProfile.format_quality_label(preferred_format, preferred_quality)
+                fmt_display = format_audio_quality(preferred_format, preferred_quality)
                 caption_lines = [
                     f"🎵 **{track_info['title']}**\n",
                     f"👤 **{track_info['artist']}**\n",
                     f"💿 **Album:** {track_info.get('album', 'Unknown')}\n",
                     f"📅 **Year:** {track_info.get('year', 'Unknown')}\n",
-                    f"🎛️ **Format:** {preferred_format.upper()} ({quality_label})"
+                    f"🎛️ **Format:** {fmt_display}"
                 ]
                 if source_quality:
                     if isinstance(source_quality, dict):
@@ -685,7 +697,7 @@ class DownloadHandler:
                 try:
                     db.record_download(user_id, track_info, username=uname)
                     # Log download
-                    await self.logger.log_download(user_id, track_info, f"{preferred_format} {preferred_quality}", username=uname)
+                    await self.logger.log_download(user_id, track_info, format_audio_quality(preferred_format, preferred_quality), username=uname)
                 except Exception as e:
                     logger.warning(f"Failed to record download in DB for user {user_id}: {e}")
 

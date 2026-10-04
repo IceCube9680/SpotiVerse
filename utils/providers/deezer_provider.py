@@ -22,7 +22,7 @@ class DeezerProvider(BaseProvider):
         super().__init__(
             provider_id="deezer",
             display_name="Deezer",
-            emoji="🟣",
+            emoji="",
             can_search=True,
             can_track=True,
             can_album=True,

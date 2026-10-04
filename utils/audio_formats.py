@@ -1145,6 +1145,15 @@ class AudioProfile:
         """Returns clean human-readable quality label for Telegram UI."""
         if isinstance(quality, dict):
             quality = cls._extract_scalar_quality(quality)
+        elif isinstance(quality, str) and quality.strip().startswith("{") and quality.strip().endswith("}"):
+            try:
+                import ast
+                parsed = ast.literal_eval(quality.strip())
+                if isinstance(parsed, dict):
+                    quality = cls._extract_scalar_quality(parsed)
+            except Exception:
+                quality = ""
+
         fmt = cls.normalize_format(format_type)
         q_str = str(quality).strip()
 
@@ -1160,16 +1169,20 @@ class AudioProfile:
 
         if str(quality).isdigit():
             return f"{quality} kbps"
+        if "{" in q_str or "}" in q_str or q_str.lower() in ("none", "null", "{}"):
+            return ""
         return str(quality)
 
 
     @classmethod
     def get_ffmpeg_args(cls, ffmpeg_bin: str, input_path: str, output_path: str,
-                        format_type: str, quality: Union[int, str]) -> List[str]:
+                        format_type: str, quality: Union[int, str, dict]) -> List[str]:
         """
         Generate safe, structured list of arguments for FFmpeg conversion without shell=True.
         Supports extended audio formats, Hi-Res sampling, bit depths, and codecs.
         """
+        if isinstance(quality, dict):
+            quality = cls._extract_scalar_quality(quality)
         fmt = cls.normalize_format(format_type)
         base_cmd = [ffmpeg_bin, "-y", "-i", input_path]
         q_str = str(quality).strip().lower()
@@ -1359,7 +1372,7 @@ class DownloadCompatibilityEngine:
     PROVIDER_SPECS: Dict[str, Dict[str, Any]] = {
         "auto": {
             "display_name": "Auto Select",
-            "emoji": "🌐",
+            "emoji": "",
             "is_lossless": True,
             "max_sample_rate": 192000,
             "max_bit_depth": 24,
@@ -1368,8 +1381,8 @@ class DownloadCompatibilityEngine:
             "source_formats": ["flac", "wav", "mp3", "opus", "aac", "ogg"]
         },
         "spotify": {
-            "display_name": "Spotify Web",
-            "emoji": "🟢",
+            "display_name": "Spotify",
+            "emoji": "",
             "is_lossless": False,
             "max_sample_rate": 48000,
             "max_bit_depth": 16,
@@ -1379,7 +1392,7 @@ class DownloadCompatibilityEngine:
         },
         "youtubemusic": {
             "display_name": "YouTube Music",
-            "emoji": "🔴",
+            "emoji": "",
             "is_lossless": False,
             "max_sample_rate": 48000,
             "max_bit_depth": 16,
@@ -1389,7 +1402,7 @@ class DownloadCompatibilityEngine:
         },
         "youtube": {
             "display_name": "YouTube",
-            "emoji": "🔴",
+            "emoji": "",
             "is_lossless": False,
             "max_sample_rate": 48000,
             "max_bit_depth": 16,
@@ -1399,7 +1412,7 @@ class DownloadCompatibilityEngine:
         },
         "deezer": {
             "display_name": "Deezer",
-            "emoji": "🟣",
+            "emoji": "",
             "is_lossless": True,
             "max_sample_rate": 48000,
             "max_bit_depth": 16,
@@ -1409,7 +1422,7 @@ class DownloadCompatibilityEngine:
         },
         "applemusic": {
             "display_name": "Apple Music",
-            "emoji": "🍎",
+            "emoji": "",
             "is_lossless": True,
             "max_sample_rate": 48000,
             "max_bit_depth": 24,
@@ -1418,8 +1431,8 @@ class DownloadCompatibilityEngine:
             "source_formats": ["alac", "aac"]
         },
         "tidal": {
-            "display_name": "Tidal",
-            "emoji": "⬛",
+            "display_name": "TIDAL",
+            "emoji": "",
             "is_lossless": True,
             "max_sample_rate": 192000,
             "max_bit_depth": 24,
@@ -1429,7 +1442,7 @@ class DownloadCompatibilityEngine:
         },
         "qobuz": {
             "display_name": "Qobuz",
-            "emoji": "🔷",
+            "emoji": "",
             "is_lossless": True,
             "max_sample_rate": 192000,
             "max_bit_depth": 24,
@@ -1439,7 +1452,7 @@ class DownloadCompatibilityEngine:
         },
         "amazonmusic": {
             "display_name": "Amazon Music",
-            "emoji": "📦",
+            "emoji": "",
             "is_lossless": True,
             "max_sample_rate": 192000,
             "max_bit_depth": 24,
@@ -1449,7 +1462,7 @@ class DownloadCompatibilityEngine:
         },
         "soundcloud": {
             "display_name": "SoundCloud",
-            "emoji": "🟠",
+            "emoji": "",
             "is_lossless": False,
             "max_sample_rate": 48000,
             "max_bit_depth": 16,
@@ -1459,7 +1472,7 @@ class DownloadCompatibilityEngine:
         },
         "jiosaavn": {
             "display_name": "JioSaavn",
-            "emoji": "🟢",
+            "emoji": "",
             "is_lossless": False,
             "max_sample_rate": 48000,
             "max_bit_depth": 16,
@@ -1469,7 +1482,7 @@ class DownloadCompatibilityEngine:
         },
         "pandora": {
             "display_name": "Pandora",
-            "emoji": "📻",
+            "emoji": "",
             "is_lossless": False,
             "max_sample_rate": 48000,
             "max_bit_depth": 16,
@@ -1479,7 +1492,7 @@ class DownloadCompatibilityEngine:
         },
         "archive": {
             "display_name": "Internet Archive",
-            "emoji": "🏛️",
+            "emoji": "",
             "is_lossless": True,
             "max_sample_rate": 48000,
             "max_bit_depth": 16,
@@ -1489,7 +1502,7 @@ class DownloadCompatibilityEngine:
         },
         "bandcamp": {
             "display_name": "Bandcamp",
-            "emoji": "⛺",
+            "emoji": "",
             "is_lossless": True,
             "max_sample_rate": 48000,
             "max_bit_depth": 24,
@@ -1524,7 +1537,9 @@ class DownloadCompatibilityEngine:
         "archive_org": "archive",
         "internet_archive": "archive",
         "internetarchive": "archive",
-        "bc": "bandcamp"
+        "bc": "bandcamp",
+        "automatic": "auto",
+        "smart": "auto"
     }
 
     @classmethod
@@ -1541,9 +1556,10 @@ class DownloadCompatibilityEngine:
         p_id = cls.normalize_provider_id(provider_id)
         if p_id in cls.PROVIDER_SPECS:
             return cls.PROVIDER_SPECS[p_id]
+        from utils.branding import get_provider_display_name
         return {
-            "display_name": p_id.title(),
-            "emoji": "🎵",
+            "display_name": get_provider_display_name(p_id),
+            "emoji": "",
             "is_lossless": False,
             "max_sample_rate": 48000,
             "max_bit_depth": 16,
@@ -1555,8 +1571,8 @@ class DownloadCompatibilityEngine:
     @classmethod
     def get_display_name(cls, provider_id: str) -> str:
         """Return human-readable display name for provider."""
-        spec = cls.get_provider_spec(provider_id)
-        return spec.get("display_name", str(provider_id).title())
+        from utils.branding import get_provider_display_name
+        return get_provider_display_name(provider_id)
 
     @classmethod
     def is_provider_usable(cls, provider_id: str) -> bool:
@@ -1588,7 +1604,7 @@ class DownloadCompatibilityEngine:
         for p_id in ordered_candidates:
             spec = cls.get_provider_spec(p_id)
             usable = cls.is_provider_usable(p_id)
-            result.append((p_id, spec["display_name"], spec["emoji"], usable))
+            result.append((p_id, spec["display_name"], spec.get("emoji", ""), usable))
 
         return result
 
@@ -1767,5 +1783,192 @@ class DownloadCompatibilityEngine:
             return False, f"Quality '{quality_profile}' is not compatible with {cls.get_display_name(p_id)} and {clean_fmt.upper()}."
 
         return True, None
+
+
+# Canonical format display name mapping
+FORMAT_DISPLAY_NAMES: Dict[str, str] = {
+    "mp3": "MP3",
+    "flac": "FLAC",
+    "aac": "AAC",
+    "m4a": "M4A",
+    "m4a_aac": "M4A",
+    "m4a_alac": "M4A ALAC",
+    "alac": "ALAC",
+    "ogg": "OGG",
+    "ogg_vorbis": "OGG",
+    "ogg_opus": "OPUS",
+    "opus": "OPUS",
+    "wav": "WAV",
+    "aiff": "AIFF",
+    "wavpack": "WAVPACK",
+    "wv": "WAVPACK",
+    "ape": "APE",
+    "ac3": "AC3",
+    "eac3": "E-AC3",
+}
+
+
+def format_audio_quality(format_type: Any, quality: Any = None) -> str:
+    """
+    Centralized display formatter for audio format and quality.
+    Accepts format and quality configuration in any representation (strings, ints, dicts, enums, combined strings)
+    and returns a clean, normalized, user-friendly display string.
+
+    Examples:
+        format_audio_quality("mp3", {"mode": "fixed", "bitrate_kbps": 320, "sample_rate": 44100}) -> "MP3 (320 kbps)"
+        format_audio_quality("mp3", 320) -> "MP3 (320 kbps)"
+        format_audio_quality("flac", "Lossless") -> "FLAC (Lossless)"
+        format_audio_quality("wav", "PCM") -> "WAV (PCM)"
+        format_audio_quality("opus", 160) -> "OPUS (160 kbps)"
+        format_audio_quality("aac", 256) -> "AAC (256 kbps)"
+    """
+    import ast
+
+    # 1. Handle dict passed as format_type (e.g. download preferences or user dict)
+    if isinstance(format_type, dict):
+        q_val = quality if quality is not None else (
+            format_type.get("quality") or format_type.get("audio_quality") or format_type.get("preferred_quality")
+        )
+        f_val = (
+            format_type.get("format") or format_type.get("audio_format") or
+            format_type.get("preferred_format") or "MP3"
+        )
+        format_type = f_val
+        quality = q_val
+
+    # Handle enum objects
+    if hasattr(format_type, "value"):
+        format_type = format_type.value
+
+    # Parse single combined string if quality is not provided
+    if quality is None and isinstance(format_type, str):
+        f_str = format_type.strip()
+        if "{" in f_str and "}" in f_str:
+            idx1 = f_str.find("{")
+            idx2 = f_str.rfind("}")
+            fmt_part = f_str[:idx1].strip()
+            q_part = f_str[idx1:idx2 + 1].strip()
+            try:
+                parsed = ast.literal_eval(q_part)
+                if isinstance(parsed, dict):
+                    format_type = fmt_part
+                    quality = parsed
+            except Exception:
+                format_type = fmt_part
+                quality = None
+        elif "(" in f_str and f_str.endswith(")"):
+            idx = f_str.find("(")
+            format_type = f_str[:idx].strip()
+            quality = f_str[idx + 1:-1].strip()
+        elif " " in f_str:
+            parts = f_str.split(" ", 1)
+            format_type = parts[0].strip()
+            quality = parts[1].strip()
+
+    # If quality is a stringified dict, parse it safely
+    if isinstance(quality, str) and quality.strip().startswith("{") and quality.strip().endswith("}"):
+        try:
+            parsed = ast.literal_eval(quality.strip())
+            if isinstance(parsed, dict):
+                quality = parsed
+        except Exception:
+            quality = None
+
+    # 2. Format name normalization
+    clean_fmt = str(format_type or "").strip().lower()
+    clean_fmt = clean_fmt.strip("():`*_ ")
+    fmt_display = FORMAT_DISPLAY_NAMES.get(clean_fmt)
+    if not fmt_display:
+        if clean_fmt in ("m4a_aac", "m4aaac"):
+            fmt_display = "M4A"
+        elif clean_fmt in ("m4a_alac", "m4aalac"):
+            fmt_display = "M4A ALAC"
+        elif clean_fmt in ("ogg_vorbis", "oggvorbis"):
+            fmt_display = "OGG"
+        elif clean_fmt in ("ogg_opus", "oggopus"):
+            fmt_display = "OPUS"
+        else:
+            fmt_display = clean_fmt.upper() if clean_fmt else "MP3"
+
+    # 3. Quality label extraction
+    q_label = ""
+    if isinstance(quality, dict):
+        mode = str(quality.get("mode") or "").strip().lower()
+        if mode in ("variable", "vbr") or "vbr" in quality:
+            br = quality.get("bitrate_kbps") or quality.get("bitrate")
+            q_label = f"{br} kbps VBR" if br else "VBR"
+        elif mode in ("source", "source_quality", "sourcequality"):
+            q_label = "Source Quality"
+        elif mode in ("auto", "best", "bestavailable"):
+            q_label = "Best Available"
+        elif mode in ("preserve", "preserveoriginal", "original"):
+            if clean_fmt in ("flac", "wav", "aiff", "alac", "m4a_alac", "wavpack", "wv", "ape"):
+                q_label = "Lossless" if quality.get("lossless") else "Preserve Original"
+            else:
+                q_label = "Preserve Original"
+        elif "bit_depth" in quality and "sample_rate" in quality:
+            depth = quality["bit_depth"]
+            rate = quality["sample_rate"]
+            if rate % 1000 == 0:
+                rate_str = f"{rate // 1000} kHz" if rate >= 1000 else f"{rate} Hz"
+            else:
+                rate_str = f"{rate / 1000:g} kHz"
+            q_label = f"{depth}-bit / {rate_str}"
+        elif quality.get("bitrate_kbps"):
+            q_label = f"{quality['bitrate_kbps']} kbps"
+        elif quality.get("bitrate"):
+            q_label = f"{quality['bitrate']} kbps"
+        elif quality.get("compression"):
+            comp = str(quality["compression"]).strip()
+            q_label = "Lossless" if comp.lower() == "lossless" else comp.title()
+
+    elif isinstance(quality, (int, float)) and quality > 0:
+        q_label = f"{int(quality)} kbps"
+
+    elif isinstance(quality, str):
+        q_str = quality.strip().strip("():`*_ ")
+        for emoji in ("✨", "🎯", "💎", "🔥"):
+            q_str = q_str.replace(emoji, "").strip()
+
+        q_lower = q_str.lower()
+        if q_lower in ("lossless", "flac lossless", "lossless compression"):
+            q_label = "Lossless"
+        elif q_lower in ("pcm", "uncompressed pcm", "wav pcm", "wav (pcm)"):
+            q_label = "PCM"
+        elif q_lower in ("best", "best available", "bestavailable"):
+            q_label = "Best Available"
+        elif q_lower in ("preserve", "preserve original", "preserveoriginal", "original"):
+            q_label = "Preserve Original"
+        elif q_lower in ("source", "source quality", "sourcequality", "source-quality"):
+            q_label = "Source Quality"
+        elif q_lower in ("variable", "vbr"):
+            q_label = "VBR"
+        elif q_str.isdigit():
+            q_label = f"{int(q_str)} kbps" if int(q_str) > 0 else ""
+        elif q_lower.endswith("kbps") and q_lower[:-4].strip().isdigit():
+            q_label = f"{q_lower[:-4].strip()} kbps"
+        elif q_lower.endswith("k") and q_lower[:-1].isdigit():
+            q_label = f"{q_lower[:-1]} kbps"
+        elif "bit" in q_lower and ("khz" in q_lower or "hz" in q_lower):
+            norm_wav = q_str.replace(" / ", "/").replace(" /", "/").replace("/ ", "/")
+            parts = norm_wav.split("/")
+            if len(parts) == 2:
+                q_label = f"{parts[0].strip()} / {parts[1].strip()}"
+            else:
+                q_label = q_str
+        elif q_lower in ("none", "null", "{}", "", "0"):
+            q_label = ""
+        elif "{" in q_str or "}" in q_str or "<" in q_str or ">" in q_str:
+            q_label = ""
+        else:
+            q_label = q_str
+
+    if q_label:
+        return f"{fmt_display} ({q_label})"
+    return fmt_display
+
+
+AudioProfile.format_audio_quality = staticmethod(format_audio_quality)
+
 
 
