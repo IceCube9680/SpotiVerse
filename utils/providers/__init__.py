@@ -1,8 +1,4 @@
-# utils/providers.py
-"""
-Central Entry Point for Music Source Providers.
-Re-exports from utils.providers package for backwards compatibility.
-"""
+# utils/providers/__init__.py
 from utils.providers.base import (
     BaseProvider,
     ProviderHealth,

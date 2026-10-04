@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 168 168" width="168" height="168">
+  <rect width="168" height="168" rx="38" fill="#1C1C1E"/>
+  <circle cx="84" cy="84" r="46" fill="#00E5FF"/>
+  <!-- Cat silhouette / headphones -->
+  <circle cx="84" cy="88" r="30" fill="#1C1C1E"/>
+  <circle cx="72" cy="84" r="6" fill="#00E5FF"/>
+  <circle cx="96" cy="84" r="6" fill="#00E5FF"/>
+  <polygon points="62,54 74,68 56,72" fill="#00E5FF"/>
+  <polygon points="106,54 112,72 94,68" fill="#00E5FF"/>
+  <!-- Headphone cups -->
+  <rect x="42" y="76" width="10" height="24" rx="5" fill="#00E5FF"/>
+  <rect x="116" y="76" width="10" height="24" rx="5" fill="#00E5FF"/>
+</svg>

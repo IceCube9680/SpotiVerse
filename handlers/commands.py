@@ -16,13 +16,13 @@ from pyrogram.handlers import MessageHandler, CallbackQueryHandler
 import re
 from info import DEFAULT_SETTINGS, get_premium_plans, get_plan_by_id
 from config import Config
-from utils.db import db, _parse_datetime
+from utils.db import db, _parse_datetime, PreferenceStatus
 from utils.logger import BotLogger
 from utils.providers import ProviderRegistry
 from utils.feature_gates import FeatureGate
 from utils.payment import payment_manager
 from utils.admin_security import admin_security
-from utils.audio_formats import AudioProfile, AudioFormat
+from utils.audio_formats import AudioProfile, AudioFormat, DownloadCompatibilityEngine
 from utils.ui_helpers import safe_answer_callback, safe_edit_or_reply
 from handlers.search import SearchHandler
 from handlers.downloads import DownloadHandler
@@ -105,51 +105,342 @@ def _build_premium_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(kb)
 
 
-def _settings_keyboard_for(user: dict) -> InlineKeyboardMarkup:
+# -------------------------------------------------------------
+# Three-Step Download Settings UI: Provider -> Format -> Quality
+# -------------------------------------------------------------
+
+def _parse_settings_callback_data(data: str) -> dict:
+    """Safely parse structured settings callback data and extract step, parameters, and revision."""
+    if not data or not isinstance(data, str):
+        return {"step": "unknown"}
+
+    if data in ("settings_close", "settings_refresh", "settings_back", "settings_providers", "settings_summary"):
+        return {"step": data}
+
+    if data.startswith("set_prov_") or data.startswith("prov_sel_") or data.startswith("provider:"):
+        raw = data.replace("set_prov_", "").replace("prov_sel_", "").replace("provider:", "")
+        rev = None
+        target = raw
+        for delim in ("_r", "_rev", ":rev", ":r"):
+            if delim in raw:
+                p, r = raw.rsplit(delim, 1)
+                if r.isdigit():
+                    target = p
+                    rev = int(r)
+                    break
+        norm_prov = DownloadCompatibilityEngine.normalize_provider_id(target)
+        return {"step": "provider", "value": norm_prov, "raw_value": target, "rev": rev}
+
+    if data.startswith("set_fmt_") or data.startswith("format:"):
+        raw = data.replace("set_fmt_", "").replace("format:", "")
+        rev = None
+        target = raw
+        for delim in ("_r", "_rev", ":rev", ":r"):
+            if delim in raw:
+                p, r = raw.rsplit(delim, 1)
+                if r.isdigit():
+                    target = p
+                    rev = int(r)
+                    break
+        prov = None
+        fmt = target
+        if "_" in target:
+            parts = target.split("_", 1)
+            if parts[0] in DownloadCompatibilityEngine.PROVIDER_CAPABILITIES:
+                prov = parts[0]
+                fmt = parts[1]
+        norm_fmt = AudioProfile.normalize_format(fmt)
+        return {"step": "format", "prov": prov, "value": norm_fmt, "raw_value": fmt, "rev": rev}
+
+    if data.startswith("set_q_") or data.startswith("quality:"):
+        raw = data.replace("set_q_", "").replace("quality:", "")
+        rev = None
+        target = raw
+        for delim in ("_r", "_rev", ":rev", ":r"):
+            if delim in raw:
+                p, r = raw.rsplit(delim, 1)
+                if r.isdigit():
+                    target = p
+                    rev = int(r)
+                    break
+        prov = None
+        fmt = None
+        val = target
+        parts = target.split("_")
+        if len(parts) >= 3 and parts[0] in DownloadCompatibilityEngine.PROVIDER_CAPABILITIES:
+            prov = parts[0]
+            fmt = parts[1]
+            val = "_".join(parts[2:])
+        elif len(parts) >= 2 and (parts[0] in AudioFormat.ALL_FORMATS or AudioProfile.normalize_format(parts[0]) in AudioProfile.FORMAT_SPECS):
+            fmt = parts[0]
+            val = "_".join(parts[1:])
+        return {"step": "quality", "prov": prov, "fmt": fmt, "value": val, "raw_value": val, "rev": rev}
+
+    if data.startswith("step_fmt_"):
+        raw = data.replace("step_fmt_", "")
+        rev = None
+        target = raw
+        for delim in ("_r", "_rev", ":rev", ":r"):
+            if delim in raw:
+                p, r = raw.rsplit(delim, 1)
+                if r.isdigit():
+                    target = p
+                    rev = int(r)
+                    break
+        return {"step": "nav_format", "prov": target, "rev": rev}
+
+    if data.startswith("step_q_"):
+        raw = data.replace("step_q_", "")
+        rev = None
+        target = raw
+        for delim in ("_r", "_rev", ":rev", ":r"):
+            if delim in raw:
+                p, r = raw.rsplit(delim, 1)
+                if r.isdigit():
+                    target = p
+                    rev = int(r)
+                    break
+        prov = None
+        fmt = target
+        if "_" in target:
+            parts = target.split("_", 1)
+            prov = parts[0]
+            fmt = parts[1]
+        return {"step": "nav_quality", "prov": prov, "fmt": fmt, "rev": rev}
+
+    return {"step": "unknown", "raw": data}
+
+
+def _provider_selection_text(user: dict) -> str:
+    """Step 1: Provider selection header text."""
+    return (
+        "⚙️ **Download Settings**\n\n"
+        "🌐 **Select Your Download Provider:**"
+    )
+
+
+def _build_provider_selection_keyboard(user: dict, revision: Optional[int] = None) -> InlineKeyboardMarkup:
+    """Step 1: Provider selection inline keyboard (compact 2-column layout)."""
     uid = user.get("user_id") or user.get("telegram_id")
-    is_premium = bool(user.get("lifetime_premium")) or bool(user.get("premium"))
+    is_premium = db.is_premium(uid) if uid else False
     if uid and Config.is_owner(uid):
         is_premium = True
 
-    allowed_formats = AudioProfile.get_allowed_formats(is_premium=is_premium)
-    current_format = str(user.get("preferred_format", "mp3")).lower().strip()
-    if current_format not in allowed_formats:
-        current_format = allowed_formats[0]
+    if revision is None:
+        revision = user.get("preference_revision")
+        if revision is None and uid and hasattr(db, "get_download_preferences"):
+            pref = db.get_download_preferences(uid)
+            revision = pref.get("revision", 1)
+        if revision is None:
+            revision = 1
 
-    next_fmt_idx = (allowed_formats.index(current_format) + 1) % len(allowed_formats)
-    next_fmt = allowed_formats[next_fmt_idx]
-
-    allowed_qualities = AudioProfile.get_allowed_qualities(current_format, is_premium=is_premium)
-    current_quality = user.get("preferred_quality", AudioProfile.get_default_quality(current_format, is_premium))
-
-    curr_q_str = str(current_quality).lower().strip()
-    match_idx = -1
-    for i, q in enumerate(allowed_qualities):
-        if str(q).lower().strip() == curr_q_str:
-            match_idx = i
-            break
-    if match_idx == -1:
-        current_quality = allowed_qualities[-1]
-        next_q = allowed_qualities[0]
-    else:
-        next_q = allowed_qualities[(match_idx + 1) % len(allowed_qualities)]
-
-    cur_label = AudioProfile.format_quality_label(current_format, current_quality)
-    next_label = AudioProfile.format_quality_label(current_format, next_q)
+    cur_prov = DownloadCompatibilityEngine.normalize_provider_id(user.get("preferred_provider", "auto"))
+    providers = DownloadCompatibilityEngine.get_available_providers(is_premium=is_premium)
 
     kb = []
-    if len(allowed_formats) > 1:
-        kb.append([InlineKeyboardButton(f"🎵 Format: {current_format.upper()} → {next_fmt.upper()}", callback_data="setting_format")])
-    else:
-        kb.append([InlineKeyboardButton(f"🎵 Format: {current_format.upper()} (MP3 Only)", callback_data="setting_format_info")])
+    row = []
+    for prov_id, disp_name, emoji, usable in providers:
+        if not usable:
+            continue
+        is_selected = (prov_id == cur_prov)
+        btn_text = f"✅ {disp_name}" if is_selected else disp_name
+        cb_data = f"set_prov_{prov_id}_r{revision}"
+        row.append(InlineKeyboardButton(btn_text, callback_data=cb_data))
+        if len(row) == 2:
+            kb.append(row)
+            row = []
+    if row:
+        kb.append(row)
 
-    kb.append([InlineKeyboardButton(f"🎚️ Quality: {cur_label} → {next_label}", callback_data="setting_quality")])
-
-    if not is_premium:
-        kb.append([InlineKeyboardButton("💎 Unlock Lossless FLAC, M4A, OGG & WAV", callback_data="view_plans")])
-
-    kb.append([InlineKeyboardButton("🔙 Back", callback_data="main_menu")])
+    # Navigation row: Back to parent/main menu, Close
+    kb.append([
+        InlineKeyboardButton("🔙 Back", callback_data="main_menu"),
+        InlineKeyboardButton("❌ Close", callback_data="settings_close")
+    ])
     return InlineKeyboardMarkup(kb)
+
+
+def _format_selection_text(user: dict, provider_id: Optional[str] = None) -> str:
+    """Step 2: Format selection header text."""
+    prov = DownloadCompatibilityEngine.normalize_provider_id(provider_id or user.get("preferred_provider", "auto"))
+    prov_name = DownloadCompatibilityEngine.get_display_name(prov)
+    return (
+        "⚙️ **Download Settings**\n\n"
+        f"🌐 **Provider:** `{prov_name}`\n\n"
+        "🎵 **Select Audio Format:**"
+    )
+
+
+def _build_format_selection_keyboard(user: dict, provider_id: Optional[str] = None, revision: Optional[int] = None) -> InlineKeyboardMarkup:
+    """Step 2: Provider-specific format selection keyboard (compact 2-column layout)."""
+    uid = user.get("user_id") or user.get("telegram_id")
+    is_premium = user.get("premium", False) or (db.is_premium(uid) if uid else False)
+    if uid and Config.is_owner(uid):
+        is_premium = True
+
+    prov = DownloadCompatibilityEngine.normalize_provider_id(provider_id or user.get("preferred_provider", "auto"))
+    cur_fmt = AudioProfile.normalize_format(user.get("preferred_format", "mp3"))
+    formats = DownloadCompatibilityEngine.get_supported_formats(prov, is_premium=is_premium)
+
+    if revision is None:
+        revision = user.get("preference_revision")
+        if revision is None and uid and hasattr(db, "get_download_preferences"):
+            pref = db.get_download_preferences(uid)
+            revision = pref.get("revision", 1)
+        if revision is None:
+            revision = 1
+
+    kb = []
+    row = []
+    for fmt_key, label in formats:
+        is_selected = AudioProfile.normalize_format(fmt_key) == cur_fmt
+        btn_text = f"✅ {label}" if is_selected else label
+        cb_data = f"set_fmt_{prov}_{fmt_key}_r{revision}"
+        row.append(InlineKeyboardButton(btn_text, callback_data=cb_data))
+        if len(row) == 2:
+            kb.append(row)
+            row = []
+    if row:
+        kb.append(row)
+
+    # Navigation row: Back to Step 1 (Provider selection), Close
+    kb.append([
+        InlineKeyboardButton("🔙 Back to Providers", callback_data="settings_providers"),
+        InlineKeyboardButton("❌ Close", callback_data="settings_close")
+    ])
+    return InlineKeyboardMarkup(kb)
+
+
+def _quality_selection_text(format_type: str, user: dict = None, provider_id: Optional[str] = None) -> str:
+    """Step 3: Quality selection header text."""
+    prov = DownloadCompatibilityEngine.normalize_provider_id(provider_id or (user.get("preferred_provider", "auto") if user else "auto"))
+    prov_name = DownloadCompatibilityEngine.get_display_name(prov)
+    spec = AudioProfile.get_spec(format_type)
+    disp_name = spec.display_name if spec else format_type.upper()
+    return (
+        "⚙️ **Download Settings**\n\n"
+        f"🌐 **Provider:** `{prov_name}`\n"
+        f"🎵 **Format:** `{disp_name}`\n\n"
+        "🎚️ **Select Audio Quality:**"
+    )
+
+
+def _build_quality_selection_keyboard(user: dict, format_type: str, provider_id: Optional[str] = None, revision: Optional[int] = None) -> InlineKeyboardMarkup:
+    """Step 3: Format-specific quality selection keyboard."""
+    uid = user.get("user_id") or user.get("telegram_id")
+    is_premium = user.get("premium", False) or (db.is_premium(uid) if uid else False)
+    if uid and Config.is_owner(uid):
+        is_premium = True
+
+    prov = DownloadCompatibilityEngine.normalize_provider_id(provider_id or user.get("preferred_provider", "auto"))
+    fmt = AudioProfile.normalize_format(format_type)
+    cur_fmt = AudioProfile.normalize_format(user.get("preferred_format", "mp3"))
+    cur_q = user.get("preferred_quality")
+
+    qualities = DownloadCompatibilityEngine.resolve_quality_profiles(prov, fmt, is_premium=is_premium)
+    if revision is None:
+        revision = user.get("preference_revision")
+        if revision is None and uid and hasattr(db, "get_download_preferences"):
+            pref = db.get_download_preferences(uid)
+            revision = pref.get("revision", 1)
+        if revision is None:
+            revision = 1
+
+    kb = []
+    grid_row = []
+    for q_val, label, slug in qualities:
+        is_selected = (fmt == cur_fmt) and AudioProfile.are_qualities_equal(cur_q, q_val)
+        btn_text = f"✅ {label}" if is_selected else label
+        cb_data = f"set_q_{prov}_{fmt}_{slug}_r{revision}"
+
+        if slug in ("best", "pres"):
+            if grid_row:
+                kb.append(grid_row)
+                grid_row = []
+            kb.append([InlineKeyboardButton(btn_text, callback_data=cb_data)])
+        else:
+            grid_row.append(InlineKeyboardButton(btn_text, callback_data=cb_data))
+            if len(grid_row) == 2:
+                kb.append(grid_row)
+                grid_row = []
+    if grid_row:
+        kb.append(grid_row)
+
+    # Navigation row: Back to Step 2 (Format selection), Close
+    back_cb = f"step_fmt_{prov}_r{revision}"
+    kb.append([
+        InlineKeyboardButton("🔙 Back to Formats", callback_data=back_cb),
+        InlineKeyboardButton("❌ Close", callback_data="settings_close")
+    ])
+    return InlineKeyboardMarkup(kb)
+
+
+def _settings_summary_text(user: dict) -> str:
+    """Step 4: Final settings summary text."""
+    uid = user.get("user_id") or user.get("telegram_id")
+    pref = db.get_download_preferences(uid) if hasattr(db, "get_download_preferences") and uid else {}
+    prov = DownloadCompatibilityEngine.normalize_provider_id(pref.get("provider_id") or user.get("preferred_provider", "auto"))
+    prov_name = DownloadCompatibilityEngine.get_display_name(prov)
+    fmt = pref.get("audio_format") or user.get("preferred_format", "mp3")
+    spec = AudioProfile.get_spec(fmt)
+    disp_fmt = spec.display_name if spec else fmt.upper()
+    raw_q = pref.get("audio_quality") if pref.get("audio_quality") is not None else user.get("preferred_quality", 320)
+    q_label = AudioProfile.format_quality_label(fmt, raw_q)
+    rev = pref.get("revision", user.get("preference_revision", 1))
+
+    return (
+        "✅ **Download Preferences Saved**\n\n"
+        f"🌐 **Provider:** `{prov_name}`\n"
+        f"🎵 **Format:** `{disp_fmt}`\n"
+        f"🎚️ **Quality:** `{q_label}`\n"
+        f"🔄 **Revision:** `{rev}`"
+    )
+
+
+def _build_settings_summary_keyboard(user: dict, revision: Optional[int] = None) -> InlineKeyboardMarkup:
+    """Step 4: Summary action keyboard with change buttons and back navigation."""
+    uid = user.get("user_id") or user.get("telegram_id")
+    if revision is None:
+        revision = user.get("preference_revision")
+        if revision is None and uid and hasattr(db, "get_download_preferences"):
+            pref = db.get_download_preferences(uid)
+            revision = pref.get("revision", 1)
+        if revision is None:
+            revision = 1
+
+    prov = DownloadCompatibilityEngine.normalize_provider_id(user.get("preferred_provider", "auto"))
+    fmt = AudioProfile.normalize_format(user.get("preferred_format", "mp3"))
+
+    kb = [
+        [InlineKeyboardButton("🌐 Change Provider", callback_data="settings_providers")],
+        [InlineKeyboardButton("🎵 Change Format", callback_data=f"step_fmt_{prov}_r{revision}")],
+        [InlineKeyboardButton("🎚️ Change Quality", callback_data=f"step_q_{prov}_{fmt}_r{revision}")],
+        [
+            InlineKeyboardButton("🔙 Back to Settings", callback_data="settings_providers"),
+            InlineKeyboardButton("❌ Close", callback_data="settings_close")
+        ]
+    ]
+    return InlineKeyboardMarkup(kb)
+
+
+def _stale_settings_text() -> str:
+    return (
+        "⚠️ **Your download settings have changed.**\n\n"
+        "Please refresh the settings menu."
+    )
+
+
+def _build_stale_settings_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Refresh Settings", callback_data="settings_refresh")],
+        [InlineKeyboardButton("❌ Close", callback_data="settings_close")]
+    ])
+
+
+def _settings_keyboard_for(user: dict, revision: Optional[int] = None) -> InlineKeyboardMarkup:
+    """Default entry keyboard for Download Settings (Step 1: Provider selection)."""
+    return _build_provider_selection_keyboard(user, revision=revision)
+
 
 
 # ----------------------
@@ -394,7 +685,9 @@ class CommandsBinder:
         if not message.from_user:
             return
         user_id = message.from_user.id
-        if not db.is_premium(user_id):
+        prem_mode = db.get_premium_mode()
+        is_prem = db.is_premium(user_id) or Config.is_owner(user_id) or not prem_mode or not Config.PREMIUM
+        if not is_prem:
             await message.reply_text(
                 "❌ **Settings are available to Premium users only.**\n\n"
                 "Upgrade to Premium to configure lossless FLAC, 320kbps MP3, and priority routing.",
@@ -402,7 +695,11 @@ class CommandsBinder:
             )
             return
         rec = db.get_user(user_id) or {}
-        await message.reply_text("⚙️ **Settings**\n\nConfigure your download preferences:", reply_markup=_settings_keyboard_for(rec))
+        pref = db.get_download_preferences(user_id)
+        rev = pref.get("revision", rec.get("preference_revision", 1))
+        text = _provider_selection_text(rec)
+        markup = _build_provider_selection_keyboard(rec, revision=rev)
+        await message.reply_text(text, reply_markup=markup)
 
     async def direct_message_handler(self, client: Client, message: Message):
         """Handle text messages or links in private chats without command prefixes."""
@@ -459,14 +756,21 @@ class CommandsBinder:
             m = re.search(r"spotify:(track|album|playlist|artist):([A-Za-z0-9]+)", u)
             if m:
                 return "spotify", m.group(1), m.group(2)
-            # YouTube
+            # YouTube Music / YouTube
+            if "music.youtube.com" in u:
+                if "list=" in u:
+                    return "ytmusic", "playlist", u
+                m = re.search(r"(?:v=|/watch\?v=)([A-Za-z0-9_-]{6,})", u)
+                if m:
+                    return "ytmusic", "track", m.group(1)
+                return "ytmusic", "track", u
             if "list=" in u:
                 return "youtube", "playlist", u
             m = re.search(r"(?:v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{6,})", u)
             if m:
                 return "youtube", "track", m.group(1)
             # Deezer
-            m = re.search(r"deezer\.com/(track|album|playlist)/([0-9]+)", u)
+            m = re.search(r"deezer\.com/(?:[a-z]{2}/)?(track|album|playlist)/([0-9]+)", u)
             if m:
                 return "deezer", m.group(1), m.group(2)
             # SoundCloud
@@ -475,15 +779,57 @@ class CommandsBinder:
                     return "soundcloud", "playlist", u
                 return "soundcloud", "track", u
             # JioSaavn
-            if "jiosaavn.com" in u or "saavn" in u:
-                if "/album/" in u or "/playlist/" in u:
+            if "jiosaavn.com" in u or "saavn.com" in u or "saavn" in u:
+                if "/album/" in u or "/playlist/" in u or "/featured/" in u:
                     return "jiosaavn", "album", u
                 return "jiosaavn", "track", u
+            # Apple Music
+            if "music.apple.com" in u:
+                if "/album/" in u:
+                    if "i=" in u:
+                        m = re.search(r"i=([0-9]+)", u)
+                        return "applemusic", "track", m.group(1) if m else u
+                    return "applemusic", "album", u
+                elif "/playlist/" in u:
+                    return "applemusic", "playlist", u
+                return "applemusic", "track", u
+            # TIDAL
+            if "tidal.com" in u:
+                if "/album/" in u:
+                    return "tidal", "album", u
+                elif "/playlist/" in u:
+                    return "tidal", "playlist", u
+                return "tidal", "track", u
+            # Qobuz
+            if "qobuz.com" in u:
+                if "/album/" in u:
+                    return "qobuz", "album", u
+                elif "/playlist/" in u:
+                    return "qobuz", "playlist", u
+                return "qobuz", "track", u
+            # Amazon Music
+            if "amazon.com/music" in u or "music.amazon." in u:
+                if "/albums/" in u or "/playlists/" in u:
+                    return "amazon", "album", u
+                return "amazon", "track", u
+            # Pandora
+            if "pandora.com" in u:
+                if "/album/" in u or "/playlist/" in u:
+                    return "pandora", "album", u
+                return "pandora", "track", u
+            # Bandcamp
+            if "bandcamp.com" in u:
+                if "/album/" in u:
+                    return "bandcamp", "album", u
+                return "bandcamp", "track", u
+            # Internet Archive
+            if "archive.org/details/" in u:
+                return "archive", "track", u
             return None, None, None
 
         provider, kind, tid = _parse_url(url)
         if not provider:
-            await message.reply_text("❌ Could not detect provider from URL. Supported: Spotify, YouTube, JioSaavn, SoundCloud, Deezer.")
+            await message.reply_text("❌ Could not detect provider from URL. Supported platforms: Spotify, YouTube, YouTube Music, JioSaavn, SoundCloud, Deezer, Apple Music, TIDAL, Qobuz, Amazon Music, Pandora, Bandcamp, Internet Archive.")
             return
 
         is_collection = kind in ("album", "playlist", "artist", "set")
@@ -1126,17 +1472,28 @@ class CommandsBinder:
             await safe_edit_or_reply(callback_query, text, reply_markup=InlineKeyboardMarkup(kb), client=self.app)
             return
 
-        # 6. Menu Settings
-        if data == "menu_settings":
-            await safe_answer_callback(callback_query)
-            if not db.is_premium(user_id):
-                txt = "⚙️ Settings are available for Premium users only.\nUpgrade to access lossless FLAC, 320kbps MP3, and priority queue."
-                kb = [[InlineKeyboardButton("💎 View Premium Plans", callback_data="view_plans")], [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]]
-                await safe_edit_or_reply(callback_query, txt, reply_markup=InlineKeyboardMarkup(kb), client=self.app)
-                return
-
-            rec = db.get_user(user_id) or {}
-            await safe_edit_or_reply(callback_query, "⚙️ **Settings**\n\nConfigure your download preferences:", reply_markup=_settings_keyboard_for(rec), client=self.app)
+        # 6. Menu Settings & Download Settings callbacks
+        if (
+            data in (
+                "menu_settings", "settings_formats", "setting_format", "settings_refresh",
+                "settings_providers", "setting_provider", "back_to_providers", "back_to_formats",
+                "settings_summary", "settings_close", "close_settings"
+            )
+            or data.startswith("set_prov_")
+            or data.startswith("prov_sel_")
+            or data.startswith("provider:")
+            or data.startswith("step_prov_")
+            or data.startswith("step_fmt_")
+            or data.startswith("step_q_")
+            or data.startswith("set_fmt_")
+            or data.startswith("set_q_")
+            or data.startswith("setting_")
+            or data.startswith("fmt_sel_")
+            or data.startswith("q_sel_")
+            or data.startswith("format:")
+            or data.startswith("quality:")
+        ):
+            await self._handle_settings_callback(callback_query)
             return
 
         # 7. Menu Help
@@ -1154,10 +1511,6 @@ class CommandsBinder:
             await safe_edit_or_reply(callback_query, help_text, reply_markup=InlineKeyboardMarkup(kb), client=self.app)
             return
 
-        # 8. Settings toggles
-        if data.startswith("setting_"):
-            await self._handle_settings_callback(callback_query)
-            return
 
         # 9. Download action from search results
         if data.startswith("download_"):
@@ -1196,60 +1549,292 @@ class CommandsBinder:
         data = callback_query.data or ""
         if not callback_query.from_user:
             return
+        if not Config.is_authorized_callback(callback_query):
+            await safe_answer_callback(callback_query, text="❌ This settings menu is not for you.", show_alert=True)
+            return
         user_id = callback_query.from_user.id
         is_premium = db.is_premium(user_id) or Config.is_owner(user_id)
-        rec = db.get_user(user_id) or {}
 
+        # 1. Close settings
+        if data in ("settings_close", "close_settings"):
+            await safe_answer_callback(callback_query)
+            try:
+                await callback_query.message.delete()
+            except Exception:
+                await safe_edit_or_reply(callback_query, "⚙️ Settings closed.", client=self.app)
+            return
+
+        # 2. Step 1: Provider Selection Screen (or Settings Entry / Refresh)
+        if data in ("menu_settings", "settings_providers", "settings_refresh", "setting_provider", "back_to_providers"):
+            await safe_answer_callback(callback_query)
+            rec = db.get_user(user_id) or {}
+            pref = db.get_download_preferences(user_id)
+            rev = pref.get("revision", rec.get("preference_revision", 1))
+            text = _provider_selection_text(rec)
+            markup = _build_provider_selection_keyboard(rec, revision=rev)
+            await safe_edit_or_reply(callback_query, text, reply_markup=markup, client=self.app)
+            return
+
+        # 3. Provider Selection Callback -> Update provider & transition to Step 2: Format Selection
+        if data.startswith("set_prov_") or data.startswith("prov_sel_") or data.startswith("provider:"):
+            raw_prov = data.replace("set_prov_", "").replace("prov_sel_", "").replace("provider:", "")
+            expected_rev = None
+            target_prov = raw_prov
+
+            if "_r" in raw_prov:
+                target_prov, rev_s = raw_prov.rsplit("_r", 1)
+                if rev_s.isdigit():
+                    expected_rev = int(rev_s)
+            elif "_rev" in raw_prov:
+                target_prov, rev_s = raw_prov.rsplit("_rev", 1)
+                if rev_s.isdigit():
+                    expected_rev = int(rev_s)
+            elif ":rev" in raw_prov:
+                target_prov, rev_s = raw_prov.rsplit(":rev", 1)
+                if rev_s.isdigit():
+                    expected_rev = int(rev_s)
+            elif ":r" in raw_prov:
+                target_prov, rev_s = raw_prov.rsplit(":r", 1)
+                if rev_s.isdigit():
+                    expected_rev = int(rev_s)
+
+            norm_prov = DownloadCompatibilityEngine.normalize_provider_id(target_prov)
+            if not DownloadCompatibilityEngine.is_provider_usable(norm_prov):
+                await safe_answer_callback(
+                    callback_query,
+                    text=f"⚠️ {DownloadCompatibilityEngine.get_display_name(norm_prov)} is currently unavailable.",
+                    show_alert=True
+                )
+                return
+
+            update_res = db.update_provider(user_id, norm_prov, expected_revision=expected_rev)
+            if isinstance(update_res, dict) and update_res.get("status") == PreferenceStatus.STALE_REVISION:
+                await safe_answer_callback(callback_query, text="⚠️ These settings have changed since this menu was opened.", show_alert=True)
+                await safe_edit_or_reply(callback_query, _stale_settings_text(), reply_markup=_build_stale_settings_keyboard(), client=self.app)
+                return
+            elif isinstance(update_res, dict) and update_res.get("status") == PreferenceStatus.INVALID_PROVIDER:
+                await safe_answer_callback(callback_query, text=f"❌ Unsupported provider {target_prov}.", show_alert=True)
+                return
+
+            updated_user = db.get_user(user_id) or {}
+            new_rev = update_res.get("revision", updated_user.get("preference_revision", 1)) if isinstance(update_res, dict) else updated_user.get("preference_revision", 1)
+            disp_name = DownloadCompatibilityEngine.get_display_name(norm_prov)
+            await safe_answer_callback(callback_query, text=f"Selected {disp_name}. Choose audio format:")
+
+            # Render Step 2: Format Selection Menu
+            text = _format_selection_text(updated_user, provider_id=norm_prov)
+            markup = _build_format_selection_keyboard(updated_user, provider_id=norm_prov, revision=new_rev)
+            await safe_edit_or_reply(callback_query, text, reply_markup=markup, client=self.app)
+            return
+
+        # 4. Step 2: Format Navigation (Back to formats or step_fmt)
+        if data.startswith("step_fmt_") or data in ("settings_formats", "back_to_formats"):
+            await safe_answer_callback(callback_query)
+            rec = db.get_user(user_id) or {}
+            pref = db.get_download_preferences(user_id)
+            cur_db_rev = pref.get("revision", rec.get("preference_revision", 1))
+            prov_target = None
+            if data.startswith("step_fmt_"):
+                raw_rest = data.replace("step_fmt_", "")
+                if "_r" in raw_rest:
+                    prov_target, rev_s = raw_rest.rsplit("_r", 1)
+                    if rev_s.isdigit() and int(rev_s) != cur_db_rev:
+                        await safe_answer_callback(callback_query, text="⚠️ These settings have changed since this menu was opened.", show_alert=True)
+                        await safe_edit_or_reply(callback_query, _stale_settings_text(), reply_markup=_build_stale_settings_keyboard(), client=self.app)
+                        return
+                else:
+                    prov_target = raw_rest
+
+            target_prov = prov_target or rec.get("preferred_provider", "auto")
+            text = _format_selection_text(rec, provider_id=target_prov)
+            markup = _build_format_selection_keyboard(rec, provider_id=target_prov, revision=cur_db_rev)
+            await safe_edit_or_reply(callback_query, text, reply_markup=markup, client=self.app)
+            return
+
+        # 5. Format Selection Callback -> Update format & transition to Step 3: Quality Selection
+        if data.startswith("set_fmt_") or data.startswith("fmt_sel_") or data.startswith("format:"):
+            raw_target = data.replace("set_fmt_", "").replace("fmt_sel_", "").replace("format:", "")
+            expected_rev = None
+            target_fmt = raw_target
+            target_prov = None
+
+            if "_r" in raw_target:
+                target_fmt, rev_s = raw_target.rsplit("_r", 1)
+                if rev_s.isdigit():
+                    expected_rev = int(rev_s)
+            elif "_rev" in raw_target:
+                target_fmt, rev_s = raw_target.rsplit("_rev", 1)
+                if rev_s.isdigit():
+                    expected_rev = int(rev_s)
+            elif ":rev" in raw_target:
+                target_fmt, rev_s = raw_target.rsplit(":rev", 1)
+                if rev_s.isdigit():
+                    expected_rev = int(rev_s)
+            elif ":r" in raw_target:
+                target_fmt, rev_s = raw_target.rsplit(":r", 1)
+                if rev_s.isdigit():
+                    expected_rev = int(rev_s)
+
+            # Check if format callback includes provider prefix (e.g. set_fmt_{prov}_{fmt}_r{rev})
+            parts = target_fmt.split("_")
+            if len(parts) >= 2:
+                potential_prov = DownloadCompatibilityEngine.normalize_provider_id(parts[0])
+                if DownloadCompatibilityEngine.is_provider_usable(potential_prov):
+                    target_prov = potential_prov
+                    target_fmt = "_".join(parts[1:])
+
+            rec_before = db.get_user(user_id) or {}
+            cur_prov = target_prov or rec_before.get("preferred_provider", "auto")
+            clean_fmt = AudioProfile.normalize_format(target_fmt)
+
+            # Perform atomic revision check and update in database
+            update_res = db.update_format(user_id, target_fmt, provider_id=cur_prov, expected_revision=expected_rev)
+            if isinstance(update_res, dict) and update_res.get("status") == PreferenceStatus.STALE_REVISION:
+                await safe_answer_callback(callback_query, text="⚠️ These settings have changed since this menu was opened.", show_alert=True)
+                await safe_edit_or_reply(callback_query, _stale_settings_text(), reply_markup=_build_stale_settings_keyboard(), client=self.app)
+                return
+            elif isinstance(update_res, dict) and update_res.get("status") == PreferenceStatus.INVALID_FORMAT:
+                await safe_answer_callback(callback_query, text=f"❌ Unsupported format {target_fmt}.", show_alert=True)
+                return
+
+            updated_user = db.get_user(user_id) or {}
+            new_rev = update_res.get("revision", updated_user.get("preference_revision", 1)) if isinstance(update_res, dict) else updated_user.get("preference_revision", 1)
+            spec = AudioProfile.get_spec(clean_fmt)
+            disp_fmt = spec.display_name if spec else clean_fmt.upper()
+            await safe_answer_callback(callback_query, text=f"Selected {disp_fmt}. Choose audio quality:")
+
+            # Render Step 3: Quality Selection Menu
+            text = _quality_selection_text(clean_fmt, updated_user, provider_id=cur_prov)
+            markup = _build_quality_selection_keyboard(updated_user, clean_fmt, provider_id=cur_prov, revision=new_rev)
+            await safe_edit_or_reply(callback_query, text, reply_markup=markup, client=self.app)
+            return
+
+        # 6. Step 3: Quality Navigation (step_q or setting_quality)
+        if data.startswith("step_q_") or data.startswith("setting_quality"):
+            await safe_answer_callback(callback_query)
+            rec = db.get_user(user_id) or {}
+            pref = db.get_download_preferences(user_id)
+            cur_db_rev = pref.get("revision", rec.get("preference_revision", 1))
+            prov_target = None
+            fmt_target = None
+
+            if data.startswith("step_q_"):
+                raw_rest = data.replace("step_q_", "")
+                if "_r" in raw_rest:
+                    core, rev_s = raw_rest.rsplit("_r", 1)
+                    if rev_s.isdigit() and int(rev_s) != cur_db_rev:
+                        await safe_answer_callback(callback_query, text="⚠️ These settings have changed since this menu was opened.", show_alert=True)
+                        await safe_edit_or_reply(callback_query, _stale_settings_text(), reply_markup=_build_stale_settings_keyboard(), client=self.app)
+                        return
+                else:
+                    core = raw_rest
+
+                parts = core.split("_")
+                if len(parts) >= 2:
+                    potential_prov = DownloadCompatibilityEngine.normalize_provider_id(parts[0])
+                    if DownloadCompatibilityEngine.is_provider_usable(potential_prov):
+                        prov_target = potential_prov
+                        fmt_target = "_".join(parts[1:])
+                    else:
+                        fmt_target = core
+                else:
+                    fmt_target = core
+
+            cur_prov = prov_target or rec.get("preferred_provider", "auto")
+            cur_fmt = fmt_target or rec.get("preferred_format", "mp3")
+            text = _quality_selection_text(cur_fmt, rec, provider_id=cur_prov)
+            markup = _build_quality_selection_keyboard(rec, cur_fmt, provider_id=cur_prov, revision=cur_db_rev)
+            await safe_edit_or_reply(callback_query, text, reply_markup=markup, client=self.app)
+            return
+
+        # 7. Quality Selection Callback -> Save atomically & show Step 4: Final Settings Summary
+        if data.startswith("set_q_") or data.startswith("q_sel_") or data.startswith("quality:"):
+            raw_q_data = data.replace("set_q_", "").replace("q_sel_", "").replace("quality:", "")
+            expected_rev = None
+            core = raw_q_data
+
+            if "_r" in raw_q_data:
+                core, rev_s = raw_q_data.rsplit("_r", 1)
+                if rev_s.isdigit():
+                    expected_rev = int(rev_s)
+            elif "_rev" in raw_q_data:
+                core, rev_s = raw_q_data.rsplit("_rev", 1)
+                if rev_s.isdigit():
+                    expected_rev = int(rev_s)
+            elif ":rev" in raw_q_data:
+                core, rev_s = raw_q_data.rsplit(":rev", 1)
+                if rev_s.isdigit():
+                    expected_rev = int(rev_s)
+            elif ":r" in raw_q_data:
+                core, rev_s = raw_q_data.rsplit(":r", 1)
+                if rev_s.isdigit():
+                    expected_rev = int(rev_s)
+
+            parts = core.split("_")
+            target_prov = None
+            fmt_key = None
+            slug = None
+
+            # Pattern: set_q_{prov}_{fmt}_{slug} or set_q_{fmt}_{slug}
+            if len(parts) >= 3:
+                potential_prov = DownloadCompatibilityEngine.normalize_provider_id(parts[0])
+                if DownloadCompatibilityEngine.is_provider_usable(potential_prov):
+                    target_prov = potential_prov
+                    if len(parts) >= 4 and f"{parts[1]}_{parts[2]}" in (AudioFormat.M4A_AAC, AudioFormat.M4A_ALAC, AudioFormat.OGG_VORBIS, AudioFormat.OGG_OPUS):
+                        fmt_key = f"{parts[1]}_{parts[2]}"
+                        slug = "_".join(parts[3:])
+                    else:
+                        fmt_key = parts[1]
+                        slug = "_".join(parts[2:])
+                else:
+                    if f"{parts[0]}_{parts[1]}" in (AudioFormat.M4A_AAC, AudioFormat.M4A_ALAC, AudioFormat.OGG_VORBIS, AudioFormat.OGG_OPUS):
+                        fmt_key = f"{parts[0]}_{parts[1]}"
+                        slug = "_".join(parts[2:])
+                    else:
+                        fmt_key = parts[0]
+                        slug = "_".join(parts[1:])
+            elif len(parts) == 2:
+                fmt_key = parts[0]
+                slug = parts[1]
+            else:
+                fmt_key = "mp3"
+                slug = "best"
+
+            rec_before = db.get_user(user_id) or {}
+            cur_prov = target_prov or rec_before.get("preferred_provider", "auto")
+            q_val = AudioProfile.get_quality_by_slug(fmt_key, slug)
+
+            # Perform atomic OCC update in DB
+            update_res = db.update_quality(user_id, q_val, provider_id=cur_prov, format_type=fmt_key, expected_revision=expected_rev)
+            if isinstance(update_res, dict) and update_res.get("status") == PreferenceStatus.STALE_REVISION:
+                await safe_answer_callback(callback_query, text="⚠️ These settings have changed since this menu was opened.", show_alert=True)
+                await safe_edit_or_reply(callback_query, _stale_settings_text(), reply_markup=_build_stale_settings_keyboard(), client=self.app)
+                return
+            elif isinstance(update_res, dict) and update_res.get("status") == PreferenceStatus.INVALID_QUALITY:
+                await safe_answer_callback(callback_query, text="❌ Invalid quality option for this format.", show_alert=True)
+                return
+
+            updated_user = db.get_user(user_id) or {}
+            new_rev = update_res.get("revision", updated_user.get("preference_revision", 1)) if isinstance(update_res, dict) else updated_user.get("preference_revision", 1)
+            spec = AudioProfile.get_spec(fmt_key)
+            disp_fmt = spec.display_name if spec else fmt_key.upper()
+            q_label = AudioProfile.format_quality_label(fmt_key, q_val)
+
+            await safe_answer_callback(callback_query, text=f"✅ Saved: {disp_fmt} ({q_label})")
+
+            # Render Step 4: Final Settings Summary
+            text = _settings_summary_text(updated_user)
+            markup = _build_settings_summary_keyboard(updated_user, revision=new_rev)
+            await safe_edit_or_reply(callback_query, text, reply_markup=markup, client=self.app)
+            return
+
+        # 8. Format info for restricted tiers
         if data == "setting_format_info":
             await safe_answer_callback(
                 callback_query,
                 text="ℹ️ Free users can download MP3. Upgrade to Premium to unlock FLAC, M4A, OGG, and WAV!",
                 show_alert=True
             )
-            return
-
-        if data == "setting_format":
-            allowed_formats = AudioProfile.get_allowed_formats(is_premium=is_premium)
-            if len(allowed_formats) <= 1:
-                await safe_answer_callback(
-                    callback_query,
-                    text="💎 Upgrade to Premium to unlock Lossless FLAC, M4A, OGG, and Studio WAV formats!",
-                    show_alert=True
-                )
-                return
-            cur_fmt = str(rec.get("preferred_format", "mp3")).lower().strip()
-            if cur_fmt not in allowed_formats:
-                cur_fmt = allowed_formats[0]
-            next_idx = (allowed_formats.index(cur_fmt) + 1) % len(allowed_formats)
-            new_fmt = allowed_formats[next_idx]
-            new_q = AudioProfile.get_default_quality(new_fmt, is_premium=is_premium)
-            db.update_user(user_id, {"preferred_format": new_fmt, "preferred_quality": new_q})
-            await safe_answer_callback(callback_query, text=f"Format set to {new_fmt.upper()}")
-            new_text = "⚙️ **Settings**\n\nConfigure your download preferences:"
-            new_markup = _settings_keyboard_for(db.get_user(user_id))
-            await safe_edit_or_reply(callback_query, new_text, reply_markup=new_markup, client=self.app)
-            return
-
-        if data == "setting_quality":
-            cur_fmt = str(rec.get("preferred_format", "mp3")).lower().strip()
-            allowed_qualities = AudioProfile.get_allowed_qualities(cur_fmt, is_premium=is_premium)
-            cur_q = rec.get("preferred_quality", AudioProfile.get_default_quality(cur_fmt, is_premium))
-            curr_q_str = str(cur_q).lower().strip()
-            match_idx = -1
-            for i, q in enumerate(allowed_qualities):
-                if str(q).lower().strip() == curr_q_str:
-                    match_idx = i
-                    break
-            if match_idx == -1:
-                new_q = allowed_qualities[0]
-            else:
-                new_q = allowed_qualities[(match_idx + 1) % len(allowed_qualities)]
-            db.update_user(user_id, {"preferred_quality": new_q})
-            q_label = AudioProfile.format_quality_label(cur_fmt, new_q)
-            await safe_answer_callback(callback_query, text=f"Quality set to {q_label}")
-            new_text = "⚙️ **Settings**\n\nConfigure your download preferences:"
-            new_markup = _settings_keyboard_for(db.get_user(user_id))
-            await safe_edit_or_reply(callback_query, new_text, reply_markup=new_markup, client=self.app)
             return
 
     async def _handle_broadcast_callback(self, callback_query: CallbackQuery):

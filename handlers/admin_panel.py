@@ -67,7 +67,7 @@ class AdminPanelHandler:
              InlineKeyboardButton("👥 Users", callback_data="adm_users_menu")],
             [InlineKeyboardButton("📢 Broadcast", callback_data="adm_broadcast_prompt"),
              InlineKeyboardButton("📜 Logs", callback_data="adm_logs_view")],
-            [InlineKeyboardButton("🚪 Close Panel", callback_data="adm_close")]
+            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]
         ]
         return InlineKeyboardMarkup(kb)
 
@@ -226,7 +226,7 @@ class AdminPanelHandler:
         kb = self.build_premium_menu_keyboard()
         await safe_edit_or_reply(message_or_cb, text, reply_markup=kb, client=self.bot)
 
-    async def show_premium_users_list(self, message_or_cb, page: int = 0):
+    async def show_premium_users_list(self, message_or_cb, page: int = 0, from_menu: str = "prem"):
         users, total = db.get_premium_users(page=page, per_page=5)
         total_pages = max(1, (total + 4) // 5)
         current_page = min(page, total_pages - 1)
@@ -249,19 +249,22 @@ class AdminPanelHandler:
                 )
 
         nav_buttons = []
+        prefix = "adm_user_prem_list_" if from_menu == "users" else "adm_prem_list_"
+        back_cb = "adm_users_menu" if from_menu == "users" else "adm_prem_menu"
+
         if current_page > 0:
-            nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"adm_prem_list_{current_page - 1}"))
+            nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"{prefix}{current_page - 1}"))
         if current_page < total_pages - 1:
-            nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"adm_prem_list_{current_page + 1}"))
+            nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"{prefix}{current_page + 1}"))
 
         kb = []
         if nav_buttons:
             kb.append(nav_buttons)
-        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="adm_prem_menu")])
+        kb.append([InlineKeyboardButton("⬅️ Back", callback_data=back_cb)])
 
         await safe_edit_or_reply(message_or_cb, text, reply_markup=InlineKeyboardMarkup(kb), client=self.bot)
 
-    async def show_expiring_soon_list(self, message_or_cb, page: int = 0):
+    async def show_expiring_soon_list(self, message_or_cb, page: int = 0, from_menu: str = "prem"):
         warn_days = getattr(Config, "PREMIUM_EXPIRY_WARNING_DAYS", 7)
         users, total = db.get_expiring_soon_users(days=warn_days, page=page, per_page=5)
         total_pages = max(1, (total + 4) // 5)
@@ -285,19 +288,22 @@ class AdminPanelHandler:
                 )
 
         nav_buttons = []
+        prefix = "adm_user_expiring_" if from_menu == "users" else "adm_prem_expiring_"
+        back_cb = "adm_users_menu" if from_menu == "users" else "adm_prem_menu"
+
         if current_page > 0:
-            nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"adm_prem_expiring_{current_page - 1}"))
+            nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"{prefix}{current_page - 1}"))
         if current_page < total_pages - 1:
-            nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"adm_prem_expiring_{current_page + 1}"))
+            nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"{prefix}{current_page + 1}"))
 
         kb = []
         if nav_buttons:
             kb.append(nav_buttons)
-        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="adm_prem_menu")])
+        kb.append([InlineKeyboardButton("⬅️ Back", callback_data=back_cb)])
 
         await safe_edit_or_reply(message_or_cb, text, reply_markup=InlineKeyboardMarkup(kb), client=self.bot)
 
-    async def show_user_check_card(self, message_or_cb, target_user_id: int):
+    async def show_user_check_card(self, message_or_cb, target_user_id: int, from_menu: str = "prem"):
         user = db.get_user(target_user_id) or {}
         is_prem = db.is_premium(target_user_id)
         until_dt = _parse_datetime(user.get("premium_until"))
@@ -324,11 +330,12 @@ class AdminPanelHandler:
             f"**Banned:** `{'🔴 Yes' if user.get('banned') else '🟢 No'}`\n"
             f"**Preferred Format:** `{user.get('preferred_format', 'mp3').upper()} {user.get('preferred_quality', 320)}`"
         )
+        back_cb = "adm_users_menu" if from_menu == "users" else "adm_prem_menu"
         kb = [
-            [InlineKeyboardButton("➕ Grant Premium", callback_data=f"adm_grant_to_{target_user_id}"),
-             InlineKeyboardButton("➖ Revoke Premium", callback_data=f"adm_revoke_from_{target_user_id}")],
-            [InlineKeyboardButton("🚫 Ban User" if not user.get("banned") else "✅ Unban User", callback_data=f"adm_toggle_ban_{target_user_id}")],
-            [InlineKeyboardButton("⬅️ Back", callback_data="adm_prem_menu")]
+            [InlineKeyboardButton("➕ Grant Premium", callback_data=f"adm_grant_to_{target_user_id}_{from_menu}"),
+             InlineKeyboardButton("➖ Revoke Premium", callback_data=f"adm_revoke_from_{target_user_id}_{from_menu}")],
+            [InlineKeyboardButton("🚫 Ban User" if not user.get("banned") else "✅ Unban User", callback_data=f"adm_toggle_ban_{target_user_id}_{from_menu}")],
+            [InlineKeyboardButton("⬅️ Back", callback_data=back_cb)]
         ]
         await safe_edit_or_reply(message_or_cb, text, reply_markup=InlineKeyboardMarkup(kb), client=self.bot)
 
@@ -414,16 +421,28 @@ class AdminPanelHandler:
             await self.show_premium_menu(callback_query)
             return
 
+        if data.startswith("adm_user_prem_list_"):
+            page = int(data.split("_")[-1])
+            await safe_answer_callback(callback_query)
+            await self.show_premium_users_list(callback_query, page, from_menu="users")
+            return
+
         if data.startswith("adm_prem_list_"):
             page = int(data.split("_")[-1])
             await safe_answer_callback(callback_query)
-            await self.show_premium_users_list(callback_query, page)
+            await self.show_premium_users_list(callback_query, page, from_menu="prem")
+            return
+
+        if data.startswith("adm_user_expiring_"):
+            page = int(data.split("_")[-1])
+            await safe_answer_callback(callback_query)
+            await self.show_expiring_soon_list(callback_query, page, from_menu="users")
             return
 
         if data.startswith("adm_prem_expiring_"):
             page = int(data.split("_")[-1])
             await safe_answer_callback(callback_query)
-            await self.show_expiring_soon_list(callback_query, page)
+            await self.show_expiring_soon_list(callback_query, page, from_menu="prem")
             return
 
         if data == "adm_prem_add_prompt":
@@ -440,11 +459,16 @@ class AdminPanelHandler:
             return
 
         if data.startswith("adm_grant_duration_"):
-            # Format: adm_grant_duration_{target_uid}_{days}_{plan_name}
+            # Format: adm_grant_duration_{target_uid}_{days}_{plan_name} or adm_grant_duration_{target_uid}_{days}_{plan_name}_{from_menu}
             parts = data.split("_")
             target_uid = int(parts[3])
             days = float(parts[4])
-            plan_name = "_".join(parts[5:])
+            if parts[-1] in ("prem", "users"):
+                from_menu = parts[-1]
+                plan_name = "_".join(parts[5:-1])
+            else:
+                from_menu = "prem"
+                plan_name = "_".join(parts[5:])
 
             until_dt = db.add_premium(target_uid, days, plan_name=plan_name, admin_id=user_id)
             await safe_answer_callback(callback_query, "✅ Premium granted successfully!", show_alert=True)
@@ -462,7 +486,7 @@ class AdminPanelHandler:
             except Exception:
                 pass
 
-            await self.show_user_check_card(callback_query, target_uid)
+            await self.show_user_check_card(callback_query, target_uid, from_menu=from_menu)
             return
 
         if data == "adm_prem_rem_prompt":
@@ -479,15 +503,17 @@ class AdminPanelHandler:
             return
 
         if data.startswith("adm_revoke_from_"):
-            target_uid = int(data.replace("adm_revoke_from_", ""))
+            parts = data.split("_")
+            target_uid = int(parts[3])
+            from_menu = parts[4] if len(parts) > 4 else "prem"
             user = db.get_user(target_uid)
             name = user.get("first_name") or user.get("display_name") or str(target_uid)
             plan = user.get("premium_plan") or "Premium"
             until_dt = _parse_datetime(user.get("premium_until"))
 
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⚠️ Confirm Revocation", callback_data=f"adm_confirm_revoke_{target_uid}")],
-                [InlineKeyboardButton("❌ Cancel", callback_data=f"adm_check_{target_uid}")]
+                [InlineKeyboardButton("⚠️ Confirm Revocation", callback_data=f"adm_confirm_revoke_{target_uid}_{from_menu}")],
+                [InlineKeyboardButton("❌ Cancel", callback_data=f"adm_check_{target_uid}_{from_menu}")]
             ])
             await safe_edit_or_reply(
                 callback_query,
@@ -502,7 +528,9 @@ class AdminPanelHandler:
             return
 
         if data.startswith("adm_confirm_revoke_"):
-            target_uid = int(data.replace("adm_confirm_revoke_", ""))
+            parts = data.split("_")
+            target_uid = int(parts[3])
+            from_menu = parts[4] if len(parts) > 4 else "prem"
             db.remove_premium(target_uid, admin_id=user_id)
             await safe_answer_callback(callback_query, "Premium access revoked.", show_alert=True)
             try:
@@ -512,11 +540,24 @@ class AdminPanelHandler:
                 )
             except Exception:
                 pass
-            await self.show_user_check_card(callback_query, target_uid)
+            await self.show_user_check_card(callback_query, target_uid, from_menu=from_menu)
+            return
+
+        if data == "adm_user_inspect_prompt":
+            _admin_action_states[user_id] = {"action": "check_user_id", "from": "users"}
+            await safe_answer_callback(callback_query)
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="adm_users_menu")]])
+            await safe_edit_or_reply(
+                callback_query,
+                "🔍 **Inspect User**\n\n"
+                "Please send the **Telegram User ID** or `@username` to inspect:",
+                reply_markup=kb,
+                client=self.bot
+            )
             return
 
         if data == "adm_prem_check_prompt":
-            _admin_action_states[user_id] = {"action": "check_user_id"}
+            _admin_action_states[user_id] = {"action": "check_user_id", "from": "prem"}
             await safe_answer_callback(callback_query)
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="adm_prem_menu")]])
             await safe_edit_or_reply(
@@ -529,22 +570,26 @@ class AdminPanelHandler:
             return
 
         if data.startswith("adm_check_"):
-            target_uid = int(data.replace("adm_check_", ""))
+            parts = data.split("_")
+            target_uid = int(parts[2])
+            from_menu = parts[3] if len(parts) > 3 else "prem"
             await safe_answer_callback(callback_query)
-            await self.show_user_check_card(callback_query, target_uid)
+            await self.show_user_check_card(callback_query, target_uid, from_menu=from_menu)
             return
 
         if data.startswith("adm_grant_to_"):
-            target_uid = int(data.replace("adm_grant_to_", ""))
+            parts = data.split("_")
+            target_uid = int(parts[3])
+            from_menu = parts[4] if len(parts) > 4 else "prem"
             await safe_answer_callback(callback_query)
             kb = [
-                [InlineKeyboardButton("7 Days", callback_data=f"adm_grant_duration_{target_uid}_7_7_Days"),
-                 InlineKeyboardButton("30 Days (1 Month)", callback_data=f"adm_grant_duration_{target_uid}_30_1_Month")],
-                [InlineKeyboardButton("90 Days (3 Months)", callback_data=f"adm_grant_duration_{target_uid}_90_3_Months"),
-                 InlineKeyboardButton("180 Days (6 Months)", callback_data=f"adm_grant_duration_{target_uid}_180_6_Months")],
-                [InlineKeyboardButton("1 Year", callback_data=f"adm_grant_duration_{target_uid}_365_1_Year"),
-                 InlineKeyboardButton("👑 Lifetime", callback_data=f"adm_grant_duration_{target_uid}_36500_Lifetime")],
-                [InlineKeyboardButton("⬅️ Back", callback_data=f"adm_check_{target_uid}")]
+                [InlineKeyboardButton("7 Days", callback_data=f"adm_grant_duration_{target_uid}_7_7_Days_{from_menu}"),
+                 InlineKeyboardButton("30 Days (1 Month)", callback_data=f"adm_grant_duration_{target_uid}_30_1_Month_{from_menu}")],
+                [InlineKeyboardButton("90 Days (3 Months)", callback_data=f"adm_grant_duration_{target_uid}_90_3_Months_{from_menu}"),
+                 InlineKeyboardButton("180 Days (6 Months)", callback_data=f"adm_grant_duration_{target_uid}_180_6_Months_{from_menu}")],
+                [InlineKeyboardButton("1 Year", callback_data=f"adm_grant_duration_{target_uid}_365_1_Year_{from_menu}"),
+                 InlineKeyboardButton("👑 Lifetime", callback_data=f"adm_grant_duration_{target_uid}_36500_Lifetime_{from_menu}")],
+                [InlineKeyboardButton("⬅️ Back", callback_data=f"adm_check_{target_uid}_{from_menu}")]
             ]
             await safe_edit_or_reply(
                 callback_query,
@@ -555,7 +600,9 @@ class AdminPanelHandler:
             return
 
         if data.startswith("adm_toggle_ban_"):
-            target_uid = int(data.replace("adm_toggle_ban_", ""))
+            parts = data.split("_")
+            target_uid = int(parts[3])
+            from_menu = parts[4] if len(parts) > 4 else "prem"
             user = db.get_user(target_uid)
             if user.get("banned"):
                 db.unban_user(target_uid, admin_id=user_id)
@@ -563,16 +610,16 @@ class AdminPanelHandler:
             else:
                 db.ban_user(target_uid, admin_id=user_id)
                 await safe_answer_callback(callback_query, "User banned.", show_alert=True)
-            await self.show_user_check_card(callback_query, target_uid)
+            await self.show_user_check_card(callback_query, target_uid, from_menu=from_menu)
             return
 
         # Users Menu
         if data == "adm_users_menu":
             await safe_answer_callback(callback_query)
             kb = [
-                [InlineKeyboardButton("🔍 Inspect User", callback_data="adm_prem_check_prompt")],
-                [InlineKeyboardButton("📄 All Premium Users", callback_data="adm_prem_list_0")],
-                [InlineKeyboardButton("⌛ Expiring Soon", callback_data="adm_prem_expiring_0")],
+                [InlineKeyboardButton("🔍 Inspect User", callback_data="adm_user_inspect_prompt")],
+                [InlineKeyboardButton("📄 All Premium Users", callback_data="adm_user_prem_list_0")],
+                [InlineKeyboardButton("⌛ Expiring Soon", callback_data="adm_user_expiring_0")],
                 [InlineKeyboardButton("⬅️ Back", callback_data="adm_main")]
             ]
             await safe_edit_or_reply(callback_query, "👥 **User Management**\n\nChoose an action:", reply_markup=InlineKeyboardMarkup(kb), client=self.bot)
@@ -687,6 +734,7 @@ class AdminPanelHandler:
             return
 
         if action == "check_user_id":
+            from_menu = state.get("from", "prem") if state else "prem"
             _admin_action_states.pop(user_id, None)
             target_uid = None
             if text.lstrip("-").isdigit():
@@ -699,7 +747,7 @@ class AdminPanelHandler:
                     await message.reply_text(f"❌ User `{text}` not found: {e}")
                     return True
 
-            await self.show_user_check_card(message, target_uid)
+            await self.show_user_check_card(message, target_uid, from_menu=from_menu)
             return
 
         if action == "broadcast_message":

@@ -3,6 +3,7 @@ import os
 
 # Default user settings
 DEFAULT_SETTINGS = {
+    "preferred_provider": "auto",
     "preferred_format": "mp3",
     "preferred_quality": 64,
     "downloads_today": 0,
@@ -15,7 +16,11 @@ DEFAULT_SETTINGS = {
     "join_date": None
 }
 
-SEARCH_PROVIDERS = ["spotify", "youtube", "deezer", "soundcloud", "jiosaavn"]
+SEARCH_PROVIDERS = [
+    "spotify", "youtube", "ytmusic", "jiosaavn", "soundcloud",
+    "deezer", "applemusic", "tidal", "qobuz", "amazon",
+    "pandora", "bandcamp", "archive"
+]
 DEFAULT_SEARCH_PROVIDER = "spotify"
 
 # Default Base Premium Plans (Configurable & Overridable)
@@ -151,12 +156,31 @@ def get_premium_plans():
     return [dict(p) for p in DEFAULT_PREMIUM_PLANS]
 
 def get_plan_by_id(plan_id: str):
-    """Find a plan by plan_id"""
+    """Find a plan by plan_id, supporting name matching and backward compatibility aliases."""
     plans = get_premium_plans()
+    clean_id = str(plan_id).lower().strip()
+    # Alias map
+    aliases = {
+        "monthly": "1_month",
+        "1month": "1_month",
+        "month": "1_month",
+        "weekly": "1_month",
+        "3month": "3_months",
+        "3_month": "3_months",
+        "6month": "6_months",
+        "6_month": "6_months",
+        "yearly": "1_year",
+        "1year": "1_year",
+        "year": "1_year",
+        "perm": "lifetime",
+        "forever": "lifetime"
+    }
+    target_id = aliases.get(clean_id, clean_id)
     for p in plans:
-        if str(p["id"]).lower() == str(plan_id).lower() or str(p["name"]).lower() == str(plan_id).lower():
+        if str(p["id"]).lower() == target_id or str(p["id"]).lower() == clean_id or str(p["name"]).lower() == clean_id:
             return p
-    return None
+    # Fallback to first plan if not found
+    return plans[0] if plans else None
 
 def parse_duration_to_timedelta(duration_str: str):
     """Parse custom duration syntax like '7d', '30d', '90d', '180d', '1y', 'lifetime' into timedelta"""
