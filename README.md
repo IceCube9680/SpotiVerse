@@ -2,7 +2,7 @@
 
 # 🎵 SpotiVerse
 
-### Modular & Asynchronous Telegram Music Downloader Bot with Production-Grade Premium & Admin Ecosystem
+### Modular & Asynchronous Telegram Music Downloader Bot with Multi-Provider Engine, Extended Audio Formats & Hi-Res Quality Architecture
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Pyrogram](https://img.shields.io/badge/Pyrogram-v2.0-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://docs.pyrogram.org/)
@@ -12,12 +12,12 @@
 [![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-brightgreen.svg?style=for-the-badge)](https://github.com/IceCube9680/SpotiVerse)
 
 <p align="center">
-  A feature-packed, high-performance Telegram music bot built with <b>Pyrogram v2</b>, <b>yt-dlp</b>, and <b>FFmpeg</b>.<br>
-  Search, stream, and download tracks, albums, and playlists from <b>Spotify</b>, <b>YouTube</b>, <b>JioSaavn</b>, <b>SoundCloud</b>, and <b>Deezer</b> in high-fidelity <b>MP3</b> or lossless <b>FLAC</b> with complete metadata tagging.<br>
-  Includes a centralized <b>Admin Panel</b>, <b>Interactive Premium Plans UI</b>, <b>Dynamic Feature Gates</b>, <b>Maintenance Mode</b>, and <b>Real-Time Statistics Dashboard</b>.
+  A state-of-the-art, high-performance Telegram music bot built with <b>Pyrogram v2</b>, <b>yt-dlp</b>, and <b>FFmpeg</b>.<br>
+  Search, stream, and download tracks, albums, and playlists across <b>13 music ecosystems</b> (Spotify, YouTube, YouTube Music, JioSaavn, SoundCloud, Deezer, Apple Music, TIDAL, Qobuz, Amazon Music, Pandora, Bandcamp, Internet Archive) in <b>12+ audio formats & containers</b> up to <b>24-bit 192 kHz Hi-Res Lossless Master Quality</b>.<br>
+  Features intelligent <b>Audio Source Quality Detection</b>, transparent <b>Anti-Upscaling Warnings</b>, <b>Dynamic Feature Gates</b>, <b>Interactive Admin Panel</b>, and <b>Priority-Aware Queue Scheduling</b>.
 </p>
 
-[**Explore Features**](#-key-features) • [**Admin Panel & Security**](#-admin-panel--security) • [**Premium Ecosystem**](#-premium-ecosystem) • [**Quickstart**](#-quickstart-guide) • [**Bot Commands**](#-bot-commands) • [**Configuration**](#-environment-variables) • [**Deployment**](#-deployment-options)
+[**Key Features**](#-key-features) • [**Supported Providers**](#-provider-ecosystem) • [**Audio Formats & Hi-Res Quality**](#-extended-audio-formats--quality-profiles) • [**Anti-Upscaling Fidelity Engine**](#-source-quality-detection--fidelity-engine) • [**Admin Panel**](#️-admin-panel--security) • [**Configuration**](#️-environment-variables) • [**Deployment**](#-deployment-options)
 
 ---
 
@@ -26,22 +26,17 @@
 ## 📑 Table of Contents
 
 - [✨ Key Features](#-key-features)
+- [🔌 Provider Ecosystem (13 Platforms)](#-provider-ecosystem)
+- [🎵 Extended Audio Formats & Quality Profiles](#-extended-audio-formats--quality-profiles)
+- [🔍 Source Quality Detection & Fidelity Engine](#-source-quality-detection--fidelity-engine)
 - [🛡️ Admin Panel & Security](#️-admin-panel--security)
-- [👑 Premium Ecosystem](#-premium-ecosystem)
-- [🔌 Provider Management & Feature Gates](#-provider-management--feature-gates)
+- [👑 Premium Ecosystem & Feature Gates](#-premium-ecosystem--feature-gates)
 - [📊 Statistics Dashboard](#-statistics-dashboard)
-- [🏗️ Project Architecture](#️-project-architecture)
+- [🏗️ Architecture & Flow](#️-architecture--flow)
 - [🚀 Quickstart Guide](#-quickstart-guide)
-  - [Prerequisites](#prerequisites)
-  - [Standard Installation](#standard-installation)
 - [⚙️ Environment Variables](#️-environment-variables)
 - [🤖 Bot Commands](#-bot-commands)
-  - [User Commands](#user-commands)
-  - [Admin & Owner Commands](#admin--owner-commands)
-  - [Direct Chat & Inline Features](#direct-chat--inline-features)
 - [📦 Deployment Options](#-deployment-options)
-  - [1. Local Deployment](#1-local-deployment)
-  - [2. Docker Container](#2-docker-container)
 - [🔧 Troubleshooting & FAQ](#-troubleshooting--faq)
 - [⚖️ Legal & Disclaimer](#️-legal--disclaimer)
 - [📄 License](#-license)
@@ -50,39 +45,86 @@
 
 ## ✨ Key Features
 
-- **🔍 Multi-Platform Unified Search**
-  Search across **Spotify**, **YouTube / YouTube Music**, **JioSaavn**, **SoundCloud**, and **Deezer** from a single search query or link.
-- **🎵 Studio-Grade Multi-Format Audio Quality**
-  Customizable audio formats and bitrates with non-upscaling source quality tracking:
-  - **MP3**: 64 kbps, 128 kbps, 192 kbps, 256 kbps, and 320 kbps (CBR/VBR).
-  - **FLAC**: Lossless audio conversion (Low, Medium, High compression).
-  - **M4A**: 128 kbps, 192 kbps, 256 kbps, and 320 kbps (High-efficiency AAC).
-  - **OGG**: 64 kbps, 96 kbps, 128 kbps, 160 kbps, 192 kbps, 256 kbps, and 320 kbps (Ogg Vorbis).
-  - **WAV**: Uncompressed Studio Master PCM (16-bit 44.1kHz, 16-bit 48kHz, 24-bit 44.1kHz, 24-bit 48kHz, 24-bit 96kHz).
-- **⚡ Zero-Credential Spotify Fallback**
-  Works out of the box even without Spotify API credentials by using an automated anonymous web scraper and provider fallback mechanism.
-- **🖼️ Complete Metadata & Cover Art Injection**
-  Automatically embeds high-resolution cover artwork, title, artists, album name, track numbers, and release year into ID3 (MP3), Vorbis (FLAC/OGG), MP4 (M4A), and RIFF/ID3 (WAV) tags using `mutagen` and `Pillow`.
-- **📀 Batch Playlist & Album Downloader**
-  Download entire albums, playlists, and artist top tracks with real-time progress indicators, cancellation controls, and premium priority scheduling.
-- **💎 Production-Grade Premium Subscription System**
-  Configurable plans (1M, 3M, 6M, 1Y, Lifetime), non-hardcoded pricing, user status screens, and decoupled payment providers (Telegram Payments, UPI/QR verification).
-- **🛠️ Telegram Admin Panel with Code Security**
-  Interactive GUI panel with SHA-256 access code authentication, rate-limited lockout protection, session timeouts, and revalidated callback authorizations.
-- **🔌 Live Provider Management**
-  Toggle individual music providers (Spotify, YouTube, JioSaavn, SoundCloud, Deezer) ON/OFF directly from Telegram with instant backend routing enforcement.
-- **⚙️ Dynamic Bot Settings & Maintenance Mode**
-  Runtime feature gates for Premium System, Free Downloads, Premium Downloads, FLAC, Batch, Priority Queue, and Maintenance Mode with administrative bypass.
-- **📊 Real-Time Multi-Period Statistics Dashboard**
-  Real-time database-aggregated metrics across 24 hours, 7 days, 30 days, and All-Time with mathematically accurate platform share breakdowns and success rates.
-- **🛡️ Dual-Layer Database Architecture**
-  Primary storage via **MongoDB Atlas / Local MongoDB** with indexed collections (`users`, `bot_settings`, `provider_settings`, `premium_plans`, `download_records`, `admin_audit`) and an automated in-memory fallback.
+- **🌐 13 Unified Music Providers**
+  Seamless search, metadata extraction, and source resolution across **Spotify**, **YouTube**, **YouTube Music**, **JioSaavn**, **SoundCloud**, **Deezer**, **Apple Music**, **TIDAL**, **Qobuz**, **Amazon Music**, **Pandora**, **Bandcamp**, and **Internet Archive**.
+- **🎧 12+ Audio Formats & Strict Codec/Container Separation**
+  Full support for MP3, FLAC, M4A (AAC & ALAC), OGG (Vorbis & Opus), Opus, WAV, AIFF, WavPack (.wv), Monkey's Audio (.ape), AC3, and E-AC3 (.eac3).
+- **💎 Studio Hi-Res & Float Quality Profiles**
+  Lossy bitrates from 32 kbps to 500 kbps, Lossless FLAC/ALAC from 16-bit 44.1 kHz to 24-bit 192 kHz, and uncompressed Studio PCM/Float up to 32-bit Float 192 kHz.
+- **🛡️ Source Fidelity & Anti-Upscaling Warning Transparency**
+  Automatic FFprobe deep stream inspection. Native stream copy is utilized when source and target match. Lossy-to-lossless conversions display clear audio degradation notices to prevent deceptive upscaling.
+- **🎯 Intelligent Track Matching Engine**
+  Normalized title noise-stripping, ISRC 100% confidence matching, artist token intersection, and duration tolerance scoring (0.0–1.0) with configurable rejection thresholds.
+- **🖼️ Universal Multi-Container Tagging**
+  Embeds cover artwork, ISRC, genre, album artist, release year, disc/track numbers into ID3v2.4, Vorbis Comments, MP4 Atoms, RIFF INFO, AIFF ID3, WavPack APEv2, and Monkey's Audio tags via `mutagen`.
+- **⚡ Priority Fair Download Queue**
+  Weighted round-robin concurrency scheduler (`PREMIUM_PRIORITY_WEIGHT=3`) with download cancellation, exponential retry backoff, and automatic scratch cleanup.
+
+---
+
+## 🔌 Provider Ecosystem
+
+Every provider implements a unified asynchronous lifecycle interface (`initialize`, `health_check`, `search`, `get_track_info`, `resolve_source`, `get_available_qualities`, `close`).
+
+| Provider | Search | Metadata | Audio Download | Default Auth | Health / Operational Notes |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| **Spotify** | ✅ | ✅ | 🔄 Via Matcher | Client ID/Secret or Web Scraper | Search & rich metadata. Stream resolved via matched source. |
+| **YouTube** | ✅ | ✅ | ✅ Direct | Public / Cookies | Primary audio extraction engine with format selection. |
+| **YouTube Music**| ✅ | ✅ | ✅ Direct | Public / Cookies | High-bitrate Opus (160 kbps) and AAC streams. |
+| **JioSaavn** | ✅ | ✅ | ✅ Direct | Public API | Direct 320 kbps MP4/AAC/MP3 audio CDN streams. |
+| **SoundCloud** | ✅ | ✅ | ✅ Direct | Public Client ID | Direct 128–256 kbps MP3/Opus streams. |
+| **Deezer** | ✅ | ✅ | 🔄 Via Matcher | Public API / ARL | Search & 30s preview; full track resolved via fallback. |
+| **Apple Music** | ✅ | ✅ | 🔄 Via Matcher | iTunes Search API | Public metadata & catalog search; matched to high-res source. |
+| **TIDAL** | ✅ | ✅ | 🔄 Via Matcher | Public / OAuth | Search & lossless metadata; matched to best available source. |
+| **Qobuz** | ✅ | ✅ | 🔄 Via Matcher | Public Catalog / API | Hi-Res 24-bit metadata; matched to lossless candidate. |
+| **Amazon Music**| ✅ | ✅ | 🔄 Via Matcher | Public Catalog | Metadata & ASIN catalog; matched to audio source. |
+| **Pandora** | ✅ | ✅ | 🔄 Via Matcher | Public / Auth | Search & track metadata; matched to audio source. |
+| **Bandcamp** | ✅ | ✅ | ✅ Direct | Public Web Stream | Direct public artist stream & full track metadata. |
+| **Internet Archive**| ✅ | ✅ | ✅ Direct | Public Audio Archive | Direct public domain lossless FLAC, VBR MP3, and OGG streams. |
+
+> [!NOTE]
+> SpotiVerse strictly respects copyright and digital rights management. For platforms that protect subscriber audio streams, SpotiVerse acts as an authentic metadata/search provider and matches the track against authorized public audio sources (or user-supplied authentication cookies).
+
+---
+
+## 🎵 Extended Audio Formats & Quality Profiles
+
+### Codec & Container Matrix
+
+| Format Name | Container | Audio Codec | Required FFmpeg Encoder | Supported Quality Profiles |
+| :--- | :---: | :---: | :---: | :--- |
+| **MP3** | `.mp3` | MP3 | `libmp3lame` | 64, 96, 128, 160, 192, 224, 256, 320 kbps |
+| **FLAC** | `.flac` | FLAC | `flac` | 16-bit (44.1k, 48k), 24-bit (44.1k, 48k, 88.2k, 96k, 176.4k, 192k) |
+| **M4A (AAC)** | `.m4a` | AAC | `aac` | 64, 96, 128, 160, 192, 224, 256, 320 kbps |
+| **M4A (ALAC)** | `.m4a` | ALAC | `alac` | 16-bit (44.1k, 48k), 24-bit (44.1k, 48k, 96k, 192k) |
+| **OGG (Vorbis)**| `.ogg` | Vorbis | `libvorbis` | 64, 96, 128, 160, 192, 224, 256, 320, 500 kbps |
+| **Opus** | `.opus` / `.ogg` | Opus | `libopus` | 32, 48, 64, 96, 128, 160, 192, 256, 320 kbps |
+| **WAV** | `.wav` | PCM | `pcm_s16le`, `pcm_s24le`, `pcm_f32le` | 16-bit, 24-bit, 32-bit Float (44.1k, 48k, 96k, 192k) |
+| **AIFF** | `.aiff` | PCM | `pcm_s16be`, `pcm_s24be`, `pcm_f32be` | 16-bit, 24-bit, 32-bit Float (44.1k, 48k, 96k, 192k) |
+| **WavPack** | `.wv` | WavPack | `wavpack` | Lossless, High, Fast, 16-bit / 24-bit PCM |
+| **Monkey's Audio**| `.ape` | APE | `ape` (or lossless copy) | Fast, Normal, High, Extra High |
+| **AC3 (Dolby Digital)**| `.ac3` | AC3 | `ac3` | 192, 224, 384, 448, 640 kbps |
+| **E-AC3 (Dolby Digital Plus)**| `.eac3` | E-AC3 | `eac3` | 224, 384, 448, 640, 1024 kbps |
+
+---
+
+## 🔍 Source Quality Detection & Fidelity Engine
+
+SpotiVerse adheres to strict audio fidelity principles:
+
+1. **Zero-Loss Stream Preservation (`can_stream_copy`)**: If the incoming source already matches the user's requested codec and container, SpotiVerse skips re-encoding entirely (`-c:a copy`), preserving the exact digital bitstream.
+2. **Anti-Upscaling Notice**: If a user requests a lossless format (e.g., FLAC 24-bit/96kHz or WAV) but the source is lossy (e.g., YouTube Opus 160kbps), SpotiVerse attaches a transparent advisory:
+   ```
+   ⚠️ Audio Fidelity Notice:
+   Source: Lossy Opus @ 160 kbps. Converted to FLAC without artificial upscaling.
+   ```
+3. **Deep Probe Inspection**: Every converted audio file is verified with `ffprobe` prior to Telegram dispatch to confirm output duration, sample rate, bit depth, and bitrate.
 
 ---
 
 ## 🛡️ Admin Panel & Security
 
-Access the centralized Admin Panel anytime using `/admin` (or `/panel`, `/dashboard`).
+Authorized administrators (`OWNER_ID`, `ADMINS`, `SUDO_USERS`) can access the control center via `/admin`:
 
 ```plaintext
 🛠 Admin Panel
@@ -95,49 +137,29 @@ Access the centralized Admin Panel anytime using `/admin` (or `/panel`, `/dashbo
 └───────────────────────────────┘
 ```
 
-### Security Highlights
-- **Role-Based Authorization**: Strict validation of `OWNER_ID`, `ADMINS`, and `SUDO_USERS` on every administrative action and callback query.
-- **Complete Audit Trail**: Sensitive actions (`add_premium`, `toggle_provider`, `maintenance_mode`, `bot_settings`, `user_ban`, `broadcast`) are permanently audited in the database with timestamps and admin IDs.
+- **Live Provider Management (`/admin -> 🔌 Providers`)**: Inspect real-time health (`ONLINE`, `DEGRADED`, `AUTH_REQUIRED`, `DISABLED`) and toggle individual platforms on the fly.
+- **Runtime Feature Gating**: Enable or disable free/premium tiers, format restrictions, and maintenance mode without restarting the process.
+- **Audit Logging**: Every sensitive action is cryptographically recorded with timestamps and admin IDs.
 
 ---
 
-## 👑 Premium Ecosystem
+## 👑 Premium Ecosystem & Feature Gates
 
-### User-Facing Premium UI
-Users can view and manage their membership at any time using `/premium`, `/plans`, or `/profile`:
-- **👑 Premium Member Screen**: Shows membership type, active plan, expiration date, remaining days countdown, and full entitlement checklist.
-- **💳 Premium Plans Screen**: Features customizable plans (1 Month ₹99, 3 Months ₹249 *Most Popular*, 6 Months ₹399, 1 Year ₹699, Lifetime ₹1499) with savings percentages and instant purchase routing.
-- **🛡️ Decoupled Payment Architecture**: Generates verified order IDs and instructions for UPI/Telegram Payments; premium activation occurs strictly upon verified payment or administrator action.
+Configure entitlement rules centrally via environment variables:
 
-### Entitlements & Priority Queue
-- **Free Users**: Configurable daily limits (`FREE_USER_DAILY_LIMIT=5`), MP3 quality, standard priority queue.
-- **Premium Users**: Unlimited daily downloads, FLAC lossless format, batch playlist downloads, and weighted priority scheduling (`PREMIUM_PRIORITY_WEIGHT=3`) with fair concurrency reservation.
-
----
-
-## 🔌 Provider Management & Feature Gates
-
-Control the entire bot runtime without restarting the server:
-
-- **Provider Management (`/admin -> 🔌 Providers`)**:
-  - 🟢 Spotify • 🟢 YouTube • 🟢 JioSaavn • 🟢 SoundCloud • 🟢 Deezer
-  - Disabling a provider immediately stops routing searches and downloads to that platform and returns user-friendly notice banners.
-- **Bot Settings (`/admin -> ⚙️ Bot Settings`)**:
-  - `Premium System`: Toggle enforcement of premium tiers.
-  - `Free Download`: Master switch for free-tier downloads.
-  - `Premium Download`: Master switch for premium downloads.
-  - `Premium FLAC`: Toggle FLAC lossless transcoding permission.
-  - `Premium Batch`: Toggle album/playlist batch downloading.
-  - `Premium Priority`: Toggle weighted priority queuing.
-- **Maintenance Mode (`/admin -> 🔧 Maintenance`)**:
-  - Instantly pause new download requests with custom maintenance banners while allowing existing active downloads to finish smoothly.
-  - Configurable bypass rules: `MAINTENANCE_ALLOW_ADMIN=True`, `MAINTENANCE_ALLOW_PREMIUM=False`.
+| Setting | Free Tier | Premium Tier |
+| :--- | :---: | :---: |
+| **Daily Quota** | `FREE_USER_DAILY_LIMIT` (e.g., 5/day) | Unlimited |
+| **Allowed Formats** | `FREE_AUDIO_FORMATS` (`mp3`) | `PREMIUM_AUDIO_FORMATS` (`mp3, flac, m4a, ogg, wav, aiff, opus, wv, ape, ac3, eac3`) |
+| **Allowed Qualities** | Standard (64k–320k) | Standard, Studio Lossless, 24-bit Hi-Res & 32-bit Float |
+| **Batch Downloading**| Single Tracks | Playlists & Full Albums |
+| **Queue Priority** | Standard FIFO | 3x Weighted Priority Scheduling |
 
 ---
 
 ## 📊 Statistics Dashboard
 
-The interactive Statistics Dashboard aggregates real data directly in the database across **24 Hours**, **7 Days**, **30 Days**, and **All-Time**:
+Database-aggregated metrics across **24 Hours**, **7 Days**, **30 Days**, and **All-Time**:
 
 ```plaintext
 📊 Statistics (Last 30 Days)
@@ -152,15 +174,15 @@ The interactive Statistics Dashboard aggregates real data directly in the databa
 • Success Rate: 96.4%
 
 🎵 Formats & Queues:
-• MP3 Downloads: 82,100 | FLAC Downloads: 7,950
+• MP3: 72,100 | FLAC: 12,950 | M4A: 3,200 | Opus: 1,800
 • Active In-Flight: 2 | Queued: 0
 
 🔥 Top Platforms (Successful):
-• YouTube:    42,100 (46.8%)
-• Spotify:    28,300 (31.4%)
-• JioSaavn:   12,200 (13.5%)
-• SoundCloud:  5,100 (5.7%)
-• Deezer:      2,350 (2.6%)
+• YouTube / YT Music: 42,100 (46.8%)
+• Spotify:            28,300 (31.4%)
+• JioSaavn:           12,200 (13.5%)
+• SoundCloud:          5,100 (5.7%)
+• Deezer & Others:     2,350 (2.6%)
 
 ⏱️ System:
 • Uptime: 4d 12h 30m | DB: Connected
@@ -168,32 +190,37 @@ The interactive Statistics Dashboard aggregates real data directly in the databa
 
 ---
 
-## 🏗️ Project Architecture
+## 🏗️ Architecture & Flow
 
-```plaintext
-SpotiVerse/
-├── bot.py                  # Bot lifecycle, uvloop init & startup tasks
-├── config.py               # Centralized configuration & environment loader
-├── info.py                 # Bot constants, premium plans & duration parser
-├── Dockerfile              # Containerization definition with FFmpeg
-├── requirements.txt        # Python dependency manifest
-├── handlers/
-│   ├── admin_panel.py      # Interactive Admin Panel, stats & settings
-│   ├── commands.py         # User commands, plans screen, profile & callbacks
-│   ├── downloads.py        # Priority queue downloader, FFmpeg & upload
-│   └── search.py           # Multi-platform provider aggregators
-├── utils/
-│   ├── admin_security.py   # Code hashing, lockout rate limiter & sessions
-│   ├── audio.py            # Audio transcoding & metadata/thumbnail embedding
-│   ├── db.py               # MongoDB multi-collection layer & fallback store
-│   ├── feature_gates.py    # 11-step centralized authorization pipeline
-│   ├── logger.py           # Telegram channel logging & audit utilities
-│   ├── payment.py          # Payment provider abstraction (Telegram & UPI)
-│   ├── providers.py        # ProviderRegistry with persistent toggle states
-│   ├── queue.py            # Priority-aware fair download scheduling queue
-│   └── ytdlp_utils.py      # yt-dlp tuners & cookies loader
-├── data/                   # Persistent storage (thumbnails, cache)
-└── temp/                   # Temporary directory for audio processing
+```mermaid
+flowchart TD
+    User([Telegram User]) -->|URL or Query| CommandHandler[handlers/commands.py / search.py]
+    CommandHandler -->|Entitlement Check| FeatureGates[utils/feature_gates.py]
+    FeatureGates -->|Authorized| Registry[utils/providers/registry.py]
+    
+    subgraph MultiProviderEngine [13 Unified Providers]
+        Registry --> Spotify[SpotifyProvider]
+        Registry --> YouTube[YouTubeProvider / YTMusic]
+        Registry --> JioSaavn[JioSaavnProvider]
+        Registry --> SoundCloud[SoundCloudProvider]
+        Registry --> Deezer[DeezerProvider]
+        Registry --> AppleMusic[AppleMusicProvider]
+        Registry --> Tidal[TidalProvider]
+        Registry --> Qobuz[QobuzProvider]
+        Registry --> Amazon[AmazonMusicProvider]
+        Registry --> Pandora[PandoraProvider]
+        Registry --> Bandcamp[BandcampProvider]
+        Registry --> Archive[ArchiveProvider]
+    end
+    
+    MultiProviderEngine -->|Normalized Metadata| Matcher[utils/providers/matcher.py]
+    Matcher -->|Best Audio Source| Queue[utils/queue.py]
+    Queue -->|Priority Worker| Downloader[handlers/downloads.py]
+    Downloader -->|Inspect Stream| AudioProcessor[utils/audio.py]
+    AudioProcessor -->|Transcode / Stream Copy| FFmpeg[FFmpeg Engine]
+    AudioProcessor -->|Embed Tags & Art| Mutagen[Mutagen Tagging]
+    AudioProcessor -->|Validate Output| FFprobe[FFprobe Inspector]
+    FFprobe -->|Dispatch Audio| TelegramAPI([Telegram User / Chat])
 ```
 
 ---
@@ -203,17 +230,17 @@ SpotiVerse/
 ### Prerequisites
 
 - **Python**: Version `3.10` or higher (`python3 --version`)
-- **FFmpeg**: Installed and available in system `$PATH` (`ffmpeg -version`)
+- **FFmpeg**: Installed with required audio encoders (`ffmpeg -encoders`)
 - **Telegram Credentials**:
   - `API_ID` & `API_HASH` from [my.telegram.org](https://my.telegram.org)
   - `BOT_TOKEN` from [@BotFather](https://t.me/BotFather)
-- **MongoDB Atlas**: Free cluster or local instance (Optional: In-memory fallback is automatic)
+- **MongoDB Atlas**: Free cluster or local instance (In-memory fallback is automatic)
 
 ### Standard Installation
 
 1. **Clone the Repository**
    ```bash
-   git clone https://github.com/IceCube9680/SpotiVerse
+   git clone https://github.com/IceCube9680/SpotiVerse.git
    cd SpotiVerse
    ```
 
@@ -223,9 +250,9 @@ SpotiVerse/
    source venv/bin/activate
    ```
 
-3. **Install Dependencies**
+3. **Install Dependencies & FFmpeg**
    ```bash
-   sudo apt update && sudo apt install -y ffmpeg curl   # Debian / Ubuntu
+   sudo apt update && sudo apt install -y ffmpeg curl
    pip install --upgrade pip
    pip install -r requirements.txt
    ```
@@ -253,26 +280,24 @@ Configure your `.env` file using the parameters below:
 | `API_ID` | `Integer` | **Yes** | — | Telegram API ID from [my.telegram.org](https://my.telegram.org). |
 | `API_HASH` | `String` | **Yes** | — | Telegram API Hash from [my.telegram.org](https://my.telegram.org). |
 | `OWNER_ID` | `Integer` | **Yes** | `0` | Telegram user ID of the primary bot owner. |
-| `ADMINS` / `SUDO_USERS` | `List[Int]` | No | `[]` | Comma or space-separated list of admin Telegram user IDs. |
+| `ADMINS` / `SUDO_USERS` | `List[Int]` | No | `[]` | List of admin Telegram user IDs. |
 | `MONGO_URI` | `String` | No | *In-Memory* | MongoDB Atlas connection URI (`mongodb+srv://...`). |
 | `PREMIUM` / `PREMIUM_MODE` | `Boolean` | No | `True` | Global premium feature enforcement flag. |
 | `FREE_USER_DAILY_LIMIT` | `Integer` | No | `5` | Daily download quota for free users (`0` to disable). |
-| `PREMIUM_EXPIRY_WARNING_DAYS` | `Integer` | No | `7` | Threshold in days for the Admin *Expiring Soon* list. |
 | `MAX_CONCURRENT_DOWNLOADS` | `Integer` | No | `3` | Global simultaneous download limit. |
-| `MAX_PREMIUM_CONCURRENT_DOWNLOADS` | `Integer` | No | `5` | Concurrency limit for premium user queue. |
-| `MAX_FREE_CONCURRENT_DOWNLOADS` | `Integer` | No | `2` | Concurrency limit for free user queue. |
 | `PREMIUM_PRIORITY_WEIGHT` | `Integer` | No | `3` | Scheduling ratio for premium vs. free download tasks. |
 | `FREE_AUDIO_FORMATS` | `List[String]` | No | `["mp3"]` | Allowed formats for free users. |
-| `FREE_MP3_QUALITIES` | `List[Int]` | No | `[64, 128, 192, 256, 320]` | Allowed MP3 bitrates for free users. |
-| `PREMIUM_AUDIO_FORMATS` | `List[String]` | No | `["mp3", "flac", "m4a", "ogg", "wav"]` | Allowed formats for premium users. |
-| `PREMIUM_MP3_QUALITIES` | `List[Int]` | No | `[64, 128, 192, 256, 320]` | Allowed MP3 bitrates for premium users. |
-| `PREMIUM_M4A_QUALITIES` | `List[Int]` | No | `[128, 192, 256, 320]` | Allowed M4A bitrates for premium users. |
-| `PREMIUM_OGG_QUALITIES` | `List[Int]` | No | `[64, 96, 128, 160, 192, 256, 320]` | Allowed Ogg Vorbis bitrates for premium users. |
-| `PREMIUM_WAV_BIT_DEPTHS` | `List[Int]` | No | `[16, 24]` | Allowed WAV PCM bit depths for premium users. |
-| `PREMIUM_WAV_SAMPLE_RATES` | `List[Int]` | No | `[44100, 48000, 96000]` | Allowed WAV sample rates (Hz) for premium users. |
+| `PREMIUM_AUDIO_FORMATS` | `List[String]` | No | `["mp3", "flac", "m4a", "ogg", "wav", "aiff", "opus", "wv", "ape", "ac3", "eac3"]` | Allowed formats for premium users. |
+| `FREE_DOWNLOAD_PROVIDERS` | `List[String]` | No | `["auto", "spotify", "youtube", "youtubemusic", "jiosaavn", "soundcloud"]` | Allowed providers for free users. |
+| `PREMIUM_DOWNLOAD_PROVIDERS`| `List[String]` | No | `["auto", "spotify", "youtube", "youtubemusic", "jiosaavn", "soundcloud", "deezer", "applemusic", "tidal", "qobuz", "amazonmusic", "pandora", "bandcamp", "archive"]` | Allowed providers for premium users. |
+| `ENABLE_APPLE_MUSIC` | `Boolean` | No | `True` | Enable Apple Music search & metadata resolver. |
+| `ENABLE_TIDAL` | `Boolean` | No | `True` | Enable TIDAL search & metadata resolver. |
+| `ENABLE_QOBUZ` | `Boolean` | No | `True` | Enable Qobuz search & metadata resolver. |
+| `ENABLE_AMAZON_MUSIC` | `Boolean` | No | `True` | Enable Amazon Music search & metadata resolver. |
+| `ENABLE_PANDORA` | `Boolean` | No | `True` | Enable Pandora search & metadata resolver. |
+| `ENABLE_BANDCAMP` | `Boolean` | No | `True` | Enable Bandcamp direct audio downloader. |
+| `ENABLE_INTERNET_ARCHIVE` | `Boolean` | No | `True` | Enable Internet Archive direct downloader. |
 | `MAX_AUDIO_FILE_SIZE_MB` | `Integer` | No | `50` | Maximum audio upload file size before warning. |
-| `PAYMENT_UPI_ID` | `String` | No | `icecube@upi` | UPI ID displayed for manual QR payments. |
-| `PAYMENT_PROVIDER_TOKEN` | `String` | No | `""` | Telegram Payments Provider token for invoices. |
 
 ---
 
@@ -283,9 +308,9 @@ Configure your `.env` file using the parameters below:
 | Command | Aliases | Parameters | Description |
 | :--- | :--- | :--- | :--- |
 | `/start` | — | None | Starts the bot, registers profile, and displays main menu. |
-| `/search` | `/s`, `/find` | `<query>` | Unified multi-platform search with paginated inline buttons. |
+| `/search` | `/s`, `/find` | `<query>` | Multi-platform search across all enabled providers. |
 | `/download` | `/dl`, `/d` | `<url>` or `<query>` | Directly download track, album, or playlist. |
-| `/settings` | `/setting`, `/set` | None | Configure default format (MP3/FLAC) and bitrate (64k–320k). |
+| `/settings` | `/setting`, `/set` | None | Configure Preferred Provider, Audio Format, and Dynamic Quality. |
 | `/profile` | `/userinfo`, `/me` | None | Displays membership tier, download stats, and remaining quota. |
 | `/premium` | `/prem`, `/plans` | None | Interactive Premium Plans screen & membership upgrade options. |
 | `/help` | `/h` | None | Displays interactive help manual and format specifications. |
@@ -308,13 +333,10 @@ Configure your `.env` file using the parameters below:
 
 ### 1. Local Deployment
 ```bash
-# Clone & install dependencies
-git clone https://github.com/IceCube9680/SpotiVerse
+git clone https://github.com/IceCube9680/SpotiVerse.git
 cd SpotiVerse
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-
-# Configure & run
 cp .env.sample .env
 python3 bot.py
 ```
@@ -350,6 +372,12 @@ docker run -d \
 <summary><b>3. Maintenance Mode behavior</b></summary>
 
 - When Maintenance is enabled, new user downloads are immediately halted with an informative notice. In-flight downloads finish uninterrupted.
+</details>
+
+<details>
+<summary><b>4. Lossless format warnings</b></summary>
+
+- If a lossy audio source (e.g., 160 kbps Opus) is converted to FLAC/WAV, SpotiVerse automatically adds a transparency note indicating that lost audio information cannot be artificially restored.
 </details>
 
 ---
