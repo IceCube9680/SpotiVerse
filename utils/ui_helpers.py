@@ -39,9 +39,13 @@ async def safe_edit_or_reply(
     if not message_or_cb:
         return None
 
-    if isinstance(message_or_cb, CallbackQuery):
-        msg = message_or_cb.message
-        user_id = message_or_cb.from_user.id if message_or_cb.from_user else (msg.chat.id if msg and msg.chat else 0)
+    is_callback = isinstance(message_or_cb, CallbackQuery) or (
+        isinstance(getattr(message_or_cb, "data", None), str)
+        and hasattr(message_or_cb, "message")
+    )
+    if is_callback:
+        msg = getattr(message_or_cb, "message", None)
+        user_id = message_or_cb.from_user.id if getattr(message_or_cb, "from_user", None) else (msg.chat.id if msg and getattr(msg, "chat", None) else 0)
 
         # 1. Edit existing message for CallbackQuery
         if msg and hasattr(msg, "edit_text"):
@@ -76,9 +80,11 @@ async def safe_edit_or_reply(
 
         return None
 
-    elif isinstance(message_or_cb, Message):
+    else:
         msg = message_or_cb
-        user_id = message_or_cb.from_user.id if message_or_cb.from_user else (message_or_cb.chat.id if message_or_cb.chat else 0)
+        from_user = getattr(message_or_cb, "from_user", None)
+        chat = getattr(message_or_cb, "chat", None)
+        user_id = from_user.id if from_user else (chat.id if chat else 0)
 
         # 1. Reply to user's command message
         if msg and hasattr(msg, "reply_text"):

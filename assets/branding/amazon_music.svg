@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 168 168" width="168" height="168">
+  <rect width="168" height="168" rx="38" fill="#141923"/>
+  <path d="M42 108c24 16 60 16 84 0" fill="none" stroke="#00A8E1" stroke-width="8" stroke-linecap="round"/>
+  <polygon points="126,108 116,104 122,116" fill="#00A8E1"/>
+  <text x="84" y="78" fill="#00A8E1" font-family="Arial, sans-serif" font-size="28" font-weight="bold" text-anchor="middle">music</text>
+</svg>

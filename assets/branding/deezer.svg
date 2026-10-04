@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 168 168" width="168" height="168">
+  <defs>
+    <linearGradient id="dz_grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#A238FF"/>
+      <stop offset="100%" stop-color="#FEAA2D"/>
+    </linearGradient>
+  </defs>
+  <rect width="168" height="168" rx="38" fill="#121216"/>
+  <path d="M84 40c-24.3 0-44 19.7-44 44 0 24.3 19.7 44 44 44s44-19.7 44-44c0-24.3-19.7-44-44-44zm0 64c-11 0-20-9-20-20s9-20 20-20 20 9 20 20-9 20-20 20z" fill="url(#dz_grad)"/>
+</svg>

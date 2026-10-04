@@ -1,4 +1,5 @@
 import os
+import time
 import socket
 import aiohttp
 import asyncio
@@ -7,11 +8,20 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQ
 from config import Config
 from utils.db import db
 from utils.audio import AudioProcessor
-from utils.audio_formats import AudioProfile, AudioFormat
+from utils.audio_formats import AudioProfile, AudioFormat, format_audio_quality
+from utils.providers import ProviderRegistry
 from utils.logger import BotLogger
 from utils.ytdlp_utils import get_ytdlp_options
 from utils.feature_gates import FeatureGate
 from utils.queue import download_queue, DownloadSlot
+from utils.progress import (
+    ProgressTracker,
+    BatchProgressTracker,
+    format_eta,
+    format_bytes,
+    format_speed,
+    render_progress_bar
+)
 from handlers.search import SearchHandler
 import logging
 import re
@@ -37,8 +47,7 @@ class DownloadHandler:
         self.search_handler = search_handler
         self.audio_processor = AudioProcessor()
         self.ydl_opts = get_ytdlp_options({'outtmpl': 'temp/%(id)s.%(ext)s'})
-        max_concurrency = getattr(Config, "MAX_CONCURRENT_DOWNLOADS", 3) or 3
-        self.semaphore = asyncio.Semaphore(max_concurrency)
+        self.semaphore = None
 
         # Ensure directories exist
         os.makedirs("temp", exist_ok=True)
@@ -145,8 +154,9 @@ class DownloadHandler:
 
     async def get_track_info(self, provider, track_id):
         """Get track metadata from provider"""
+        canonical_prov = ProviderRegistry.get_canonical_id(provider)
         try:
-            if provider in ["spotify", "sp"]:
+            if canonical_prov in ["spotify", "sp"]:
                 if self.search_handler.spotify and not self.search_handler._use_anonymous_token:
                     sp_client = self.search_handler.get_spotify_client()
                     if sp_client:
@@ -172,7 +182,8 @@ class DownloadHandler:
                                 "year": rel_date[:4] if rel_date else "",
                                 "duration": int(track.get("duration_ms", 0)) // 1000,
                                 "thumbnail": thumb,
-                                "provider": "spotify"
+                                "provider": "spotify",
+                                "isrc": track.get("external_ids", {}).get("isrc")
                             }
                         except Exception as e:
                             serr = str(e)
@@ -186,7 +197,7 @@ class DownloadHandler:
                 # Fallback to web scraping / oembed
                 return await self.fetch_spotify_track_info_via_web(track_id)
             
-            elif provider in ["youtube", "yt"]:
+            elif canonical_prov in ["youtube", "yt", "ytmusic"]:
                 url = track_id if "http" in track_id else f"https://www.youtube.com/watch?v={track_id}"
                 
                 def _get_yt_info():
@@ -218,7 +229,7 @@ class DownloadHandler:
                     "webpage_url": info.get("webpage_url", url)
                 }
 
-            elif provider in ["saavn", "jiosaavn"]:
+            elif canonical_prov in ["saavn", "jiosaavn"]:
                 url = f"https://www.jiosaavn.com/api.php?__call=song.getDetails&pids={track_id}&_format=json&_marker=0&ctx=android"
                 try:
                     connector = aiohttp.TCPConnector(family=socket.AF_INET)
@@ -231,6 +242,9 @@ class DownloadHandler:
                                 if sdata:
                                     thumb_img = sdata.get('image', '')
                                     thumb = thumb_img.replace('50x50', '500x500').replace('150x150', '500x500') if thumb_img else None
+                                    more_info = sdata.get('more_info', {}) or {}
+                                    raw_stream = sdata.get('media_preview_url') or more_info.get('encrypted_media_url')
+                                    stream_url = raw_stream if (raw_stream and str(raw_stream).startswith("http")) else None
                                     return {
                                         "id": track_id,
                                         "title": sdata.get('song') or sdata.get('title') or "Unknown Track",
@@ -239,7 +253,8 @@ class DownloadHandler:
                                         "year": str(sdata.get('year', ''))[:4],
                                         "duration": int(sdata.get('duration', 0)),
                                         "thumbnail": thumb,
-                                        "provider": "saavn"
+                                        "provider": "jiosaavn",
+                                        "stream_url": stream_url
                                     }
                 except Exception as saavn_err:
                     logger.warning(f"Error fetching saavn track details for {track_id}: {saavn_err}")
@@ -252,21 +267,50 @@ class DownloadHandler:
                     "year": "",
                     "duration": 0,
                     "thumbnail": None,
-                    "provider": "saavn"
+                    "provider": "jiosaavn"
                 }
+
+            else:
+                prov_inst = ProviderRegistry.get_instance(canonical_prov)
+                if prov_inst:
+                    meta = await prov_inst.get_track_info(track_id)
+                    if meta:
+                        return {
+                            "id": meta.provider_track_id or track_id,
+                            "title": meta.title,
+                            "artist": meta.artist,
+                            "album": meta.album or "Unknown Album",
+                            "year": str(meta.release_date)[:4] if meta.release_date else "",
+                            "duration": meta.duration or 0,
+                            "thumbnail": meta.artwork,
+                            "provider": canonical_prov,
+                            "webpage_url": meta.webpage_url,
+                            "isrc": meta.isrc
+                        }
         except Exception as e:
             logger.error(f"Error in get_track_info: {e}")
             return None
 
-    async def download_audio(self, provider, track_info):
-        """Download audio from YouTube (searching if necessary)"""
+    async def download_audio(self, provider, track_info, progress_tracker=None, preferred_source_provider=None):
+        """Download audio with intelligent source matching and real-time progress tracking"""
         try:
             download_url = None
-            
-            if provider in ["youtube", "yt"]:
+            canonical_prov = ProviderRegistry.get_canonical_id(provider)
+
+            if canonical_prov in ["youtube", "yt", "ytmusic", "soundcloud", "bandcamp", "archive"] and track_info.get("webpage_url") and str(track_info.get("webpage_url")).startswith("http"):
                 download_url = track_info.get("webpage_url")
+            elif track_info.get("stream_url") and str(track_info.get("stream_url")).startswith("http"):
+                download_url = track_info.get("stream_url")
             else:
-                query = f"{track_info['title']} - {track_info['artist']} audio"
+                matched_source = await ProviderRegistry.resolve_audio_source(
+                    track_info,
+                    preferred_provider=preferred_source_provider
+                )
+                if matched_source and matched_source.source_url and str(matched_source.source_url).startswith("http"):
+                    download_url = matched_source.source_url
+
+            if not download_url or not str(download_url).startswith("http"):
+                query = f"{track_info.get('title', '')} - {track_info.get('artist', '')} audio"
                 def _search_yt():
                     opts = get_ytdlp_options({'quiet': True, 'skip_download': True, 'noplaylist': True, 'default_search': 'ytsearch1'})
                     try:
@@ -292,10 +336,29 @@ class DownloadHandler:
             
             if not download_url:
                 return None
+
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
+
+            def _progress_hook(d):
+                if progress_tracker and d.get('status') == 'downloading':
+                    downloaded = d.get('downloaded_bytes', 0)
+                    total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+                    speed = d.get('speed')
+                    eta = d.get('eta')
+                    if loop and loop.is_running():
+                        asyncio.run_coroutine_threadsafe(
+                            progress_tracker.update_download(downloaded, total, speed, eta),
+                            loop
+                        )
             
             def _download():
-                # Refresh ydl_opts to include any newly placed cookies.txt
-                current_opts = get_ytdlp_options({'outtmpl': 'temp/%(id)s.%(ext)s'})
+                current_opts = get_ytdlp_options({
+                    'outtmpl': 'temp/%(id)s.%(ext)s',
+                    'progress_hooks': [_progress_hook]
+                })
                 try:
                     with yt_dlp.YoutubeDL(current_opts) as ydl:
                         info = ydl.extract_info(download_url, download=True)
@@ -303,37 +366,44 @@ class DownloadHandler:
                 except Exception as err:
                     logger.warning(f"Primary yt-dlp download failed: {err}. Retrying with fallback player clients...")
                     fallback_opts = get_ytdlp_options(
-                        extra_opts={'outtmpl': 'temp/%(id)s.%(ext)s'},
+                        extra_opts={
+                            'outtmpl': 'temp/%(id)s.%(ext)s',
+                            'progress_hooks': [_progress_hook]
+                        },
                         player_clients=['mweb', 'android', 'ios', 'web']
                     )
-                    with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                        info = ydl.extract_info(download_url, download=True)
-                        return ydl.prepare_filename(info)
+                    try:
+                        with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                            info = ydl.extract_info(download_url, download=True)
+                            return ydl.prepare_filename(info)
+                    except Exception as fb_err:
+                        logger.warning(f"Direct stream download failed: {fb_err}. Trying YouTube search fallback...")
+                        yt_query = f"ytsearch1:{track_info.get('title', '')} {track_info.get('artist', '')} audio"
+                        with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                            info = ydl.extract_info(yt_query, download=True)
+                            if info and 'entries' in info and info['entries']:
+                                return ydl.prepare_filename(info['entries'][0])
+                            elif info:
+                                return ydl.prepare_filename(info)
+                            raise fb_err
             
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = asyncio.get_event_loop()
             return await loop.run_in_executor(None, _download)
         except Exception as e:
             logger.error(f"Error in download_audio: {e}")
             return None
 
-    async def download_track(self, provider, track_id, user_id, message, is_batch=False):
+    async def download_track(self, provider, track_id, user_id, message, is_batch=False, batch_tracker=None):
         """Download a track from the specified provider - returns success status (Free + Premium)"""
         user = db.get_user(user_id) or {}
         is_premium = db.is_premium(user_id)
 
-        # Get user preferences via effective settings
-        eff_settings = db.get_effective_settings(user_id) if hasattr(db, "get_effective_settings") else {}
-        if not isinstance(eff_settings, dict):
-            eff_settings = {}
-        preferred_format = eff_settings.get("preferred_format") or user.get("preferred_format", "mp3")
+        # Get user preferences via centralized single source of truth
+        pref = db.get_download_preferences(user_id) if hasattr(db, "get_download_preferences") else {}
+        preferred_provider = pref.get("preferred_provider") or user.get("preferred_provider", "auto")
+        preferred_format = pref.get("audio_format") or user.get("preferred_format", "mp3")
         if not isinstance(preferred_format, str):
             preferred_format = "mp3"
-        preferred_quality = eff_settings.get("preferred_quality") or user.get("preferred_quality", 320 if is_premium else 64)
-        if isinstance(preferred_quality, (MagicMock if "MagicMock" in globals() else type(None))):
-            preferred_quality = 320
+        preferred_quality = pref.get("audio_quality") if pref.get("audio_quality") is not None else user.get("preferred_quality", 320)
 
         # Centralized authorization check
         auth = FeatureGate.authorize_download(user_id, provider=provider, format=preferred_format, is_batch=is_batch)
@@ -372,9 +442,30 @@ class DownloadHandler:
                 await self.safe_edit_message(message, "❌ Could not retrieve track information.")
                 return False
 
-            # Download the audio
-            await self.safe_edit_message(message, f"⬇️ Downloading **{track_info['title']}**...")
-            audio_path = await self.download_audio(provider, track_info)
+            # Initialize live progress tracker with rich song metadata
+            progress_tracker = ProgressTracker(
+                bot=self.bot,
+                message=message,
+                title=track_info.get("title", "Track"),
+                artist=track_info.get("artist", "Unknown Artist"),
+                album=track_info.get("album"),
+                duration=track_info.get("duration"),
+                year=track_info.get("year"),
+                provider=track_info.get("provider", provider),
+                format_name=preferred_format,
+                quality=preferred_quality,
+                batch_tracker=batch_tracker,
+                safe_edit_fn=self.safe_edit_message
+            )
+
+            # Download the audio stream
+            await progress_tracker.update_status("⬇️ **Downloading audio stream...**", force=True)
+            audio_path = await self.download_audio(
+                provider,
+                track_info,
+                progress_tracker=progress_tracker,
+                preferred_source_provider=preferred_provider if preferred_provider != "auto" else None
+            )
 
             if not audio_path:
                 if record_id and hasattr(db, "update_download_record"):
@@ -382,8 +473,19 @@ class DownloadHandler:
                 await self.safe_edit_message(message, "❌ Failed to download audio.")
                 return False
 
+            # Inspect source audio quality before conversion
+            source_quality = None
+            if hasattr(self.audio_processor, "get_source_quality"):
+                source_quality = self.audio_processor.get_source_quality(audio_path)
+            elif hasattr(self.audio_processor, "inspect_audio_source"):
+                source_quality = self.audio_processor.inspect_audio_source(audio_path)
+
+            lossy_warning = None
+            if hasattr(self.audio_processor, "check_lossy_to_lossless_warning"):
+                lossy_warning = self.audio_processor.check_lossy_to_lossless_warning(source_quality, preferred_format, preferred_quality)
+
             # Process the audio
-            await self.safe_edit_message(message, f"🔄 Processing **{track_info['title']}**...")
+            await progress_tracker.update_status("🔄 **Processing audio & applying metadata...**", force=True)
 
             # Convert if needed
             try:
@@ -465,17 +567,42 @@ class DownloadHandler:
                 logger.warning(f"Failed to add metadata: {e}")
 
             # Send audio file
-            await self.safe_edit_message(message, f"📤 Uploading **{track_info['title']}**...")
+            await progress_tracker.update_status("📤 **Uploading audio to Telegram...**", force=True)
+
+            async def _upload_progress_cb(current, total):
+                await progress_tracker.update_upload(current, total)
 
             try:
-                quality_label = AudioProfile.format_quality_label(preferred_format, preferred_quality)
-                caption = (
-                    f"🎵 **{track_info['title']}**\n\n"
-                    f"👤 **{track_info['artist']}**\n\n"
-                    f"💿 **Album:** {track_info.get('album', 'Unknown')}\n\n"
-                    f"📅 **Year:** {track_info.get('year', 'Unknown')}\n\n"
-                    f"🎛️ **Format:** {preferred_format.upper()} ({quality_label})"
-                )
+                fmt_display = format_audio_quality(preferred_format, preferred_quality)
+                caption_lines = [
+                    f"🎵 **{track_info['title']}**\n",
+                    f"👤 **{track_info['artist']}**\n",
+                    f"💿 **Album:** {track_info.get('album', 'Unknown')}\n",
+                    f"📅 **Year:** {track_info.get('year', 'Unknown')}\n",
+                    f"🎛️ **Format:** {fmt_display}"
+                ]
+                if source_quality:
+                    if isinstance(source_quality, dict):
+                        src_codec = str(source_quality.get("codec") or "").upper()
+                        src_br = source_quality.get("bitrate_kbps") or source_quality.get("bitrate")
+                        src_sr = source_quality.get("sample_rate")
+                    else:
+                        src_codec = str(getattr(source_quality, "codec", "") or "").upper()
+                        src_br = getattr(source_quality, "bitrate_kbps", None) or getattr(source_quality, "bitrate", None)
+                        src_sr = getattr(source_quality, "sample_rate", None)
+
+                    if src_codec and src_codec not in ("UNKNOWN", ""):
+                        src_label = src_codec
+                        if src_br and int(src_br) > 0:
+                            src_label += f" {src_br} kbps"
+                        elif src_sr and int(src_sr) > 0:
+                            src_label += f" {src_sr} Hz"
+                        caption_lines.append(f"🔍 **Source:** {src_label}")
+
+                if lossy_warning:
+                    caption_lines.append(f"\n{lossy_warning}")
+
+                caption = "\n".join(caption_lines)
 
                 # Retry loop for send_audio handling FloodWait
                 uploaded = False
@@ -488,7 +615,8 @@ class DownloadHandler:
                             thumb=thumbnail_path,
                             title=track_info["title"],
                             performer=track_info["artist"],
-                            duration=track_info.get("duration", 0)
+                            duration=track_info.get("duration", 0),
+                            progress=_upload_progress_cb
                         )
                         uploaded = True
                         break
@@ -559,7 +687,7 @@ class DownloadHandler:
                         status="success",
                         file_size=file_size,
                         duration=track_info.get("duration", 0),
-                        source_quality=conv_info.get("source_quality"),
+                        source_quality=source_quality.to_dict() if hasattr(source_quality, "to_dict") else (source_quality if isinstance(source_quality, dict) else conv_info.get("source_quality")),
                         conversion_duration=conv_info.get("conversion_duration_sec"),
                         format_used=preferred_format,
                         quality=preferred_quality
@@ -569,7 +697,7 @@ class DownloadHandler:
                 try:
                     db.record_download(user_id, track_info, username=uname)
                     # Log download
-                    await self.logger.log_download(user_id, track_info, f"{preferred_format} {preferred_quality}", username=uname)
+                    await self.logger.log_download(user_id, track_info, format_audio_quality(preferred_format, preferred_quality), username=uname)
                 except Exception as e:
                     logger.warning(f"Failed to record download in DB for user {user_id}: {e}")
 
@@ -871,6 +999,7 @@ class DownloadHandler:
                 track_items = [("spotify", tid) for tid in track_ids if tid]
 
             elif provider == "youtube" or provider == 'yt':
+                kind = "playlist"
                 entries = await self._youtube_get_playlist_entries(album_id_or_url)
                 if not entries:
                     await self.safe_edit_message(message, "❌ Could not extract YouTube playlist entries.")
@@ -889,40 +1018,56 @@ class DownloadHandler:
             success_count = 0
             fail_count = 0
 
+            batch_tracker = BatchProgressTracker(
+                kind=kind if 'kind' in locals() and kind else "collection",
+                title=f"{kind.title() if 'kind' in locals() and kind else 'Collection'} ({total} tracks)",
+                total_tracks=total
+            )
+
             progress = await self.safe_edit_message(
                 message,
-                f"⬇️ Preparing to download {total} tracks from album/playlist...\nProgress: 0/{total}"
+                f"⬇️ Preparing to download {total} tracks...\n\n"
+                f"{batch_tracker.render_header(current_track_fraction=0.0)}"
             ) or message
 
             for idx, (prov, tid) in enumerate(track_items, start=1):
+                batch_tracker.start_track(idx)
+                header = batch_tracker.render_header(current_track_fraction=0.0)
                 try:
                     progress = await self.safe_edit_message(
                         progress,
-                        f"⬇️ Downloading [{idx}/{total}]...\n"
-                        f"✅ Successful: {success_count}  |  ❌ Failed: {fail_count}"
+                        f"{header}⬇️ Starting track [{idx}/{total}]..."
                     ) or progress
                 except Exception as e:
                     logger.warning(f"Could not update batch progress message: {e}")
 
                 try:
-                    single_success = await self.download_track(prov, tid, user_id, progress, is_batch=True)
+                    single_success = await self.download_track(
+                        prov, tid, user_id, progress, is_batch=True, batch_tracker=batch_tracker
+                    )
+                    batch_tracker.record_track_result(single_success)
                     if single_success:
                         success_count += 1
                     else:
                         fail_count += 1
                 except Exception as e:
                     logger.error(f"Failed downloading track {tid}: {e}")
+                    batch_tracker.record_track_result(False)
                     fail_count += 1
 
                 # Brief delay between tracks to reduce Telegram rate limits
                 await asyncio.sleep(1.5)
 
+            total_elapsed = time.time() - batch_tracker.start_time
+            time_str = format_eta(total_elapsed)
+            kind_name = (kind if 'kind' in locals() and kind else "album/playlist").title()
             final_msg = await self.safe_edit_message(
                 progress,
-                f"✅ **Album/playlist download finished.**\n\n"
+                f"✅ **{kind_name} download finished.**\n\n"
                 f"📊 Total tracks: {total}\n"
                 f"✅ Successful: {success_count}\n"
-                f"❌ Failed: {fail_count}"
+                f"❌ Failed: {fail_count}\n"
+                f"⏱️ Total Time: {time_str}"
             )
 
             # Schedule deletion for the single final summary message after 5 minutes

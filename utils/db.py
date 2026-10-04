@@ -2,11 +2,22 @@
 import os
 import time
 import logging
+import threading
+from typing import Optional, Any, Tuple, Dict, List, Union
 from datetime import datetime, timedelta, timezone
 from pymongo import MongoClient, errors
 from info import DEFAULT_SETTINGS
 
 logger = logging.getLogger(__name__)
+
+class PreferenceStatus:
+    SUCCESS = "SUCCESS"
+    STALE_REVISION = "STALE_REVISION"
+    INVALID_FORMAT = "INVALID_FORMAT"
+    INVALID_QUALITY = "INVALID_QUALITY"
+    INVALID_PROVIDER = "INVALID_PROVIDER"
+    DATABASE_ERROR = "DATABASE_ERROR"
+    USER_NOT_AUTHORIZED = "USER_NOT_AUTHORIZED"
 
 # Start timestamp for uptime calculation
 BOT_START_TIME = time.time()
@@ -21,6 +32,8 @@ except Exception:
     _DEFAULT_DB_NAME = "spotiverse_bot"
 
 MONGO_URI = os.environ.get("MONGO_URI", _DEFAULT_MONGO_URI)
+if os.environ.get("TESTING") == "1" or os.environ.get("PYTEST_CURRENT_TEST"):
+    MONGO_URI = ""
 DB_NAME = os.environ.get("MONGO_DBNAME", _DEFAULT_DB_NAME)
 
 # Default Bot Feature Gates
@@ -93,6 +106,17 @@ def _populate_user_defaults(user: dict) -> dict:
         return user
     today_str = _get_utc_now().strftime("%Y-%m-%d")
     now_dt = _get_utc_now()
+
+    rev = user.get("preference_revision")
+    if rev is None or not isinstance(rev, int) or rev < 1:
+        if isinstance(user.get("download_preferences"), dict) and user["download_preferences"].get("revision"):
+            try:
+                rev = int(user["download_preferences"]["revision"])
+            except Exception:
+                rev = 1
+        else:
+            rev = 1
+
     defaults = {
         "premium": False,
         "premium_plan": None,
@@ -108,6 +132,8 @@ def _populate_user_defaults(user: dict) -> dict:
         "last_download_date": today_str,
         "preferred_format": DEFAULT_SETTINGS.get("preferred_format", "mp3"),
         "preferred_quality": DEFAULT_SETTINGS.get("preferred_quality", 64),
+        "preferred_codec": DEFAULT_SETTINGS.get("preferred_format", "mp3"),
+        "preference_revision": rev,
         "join_date": now_dt,
         "created_at": now_dt,
         "updated_at": now_dt,
@@ -116,10 +142,13 @@ def _populate_user_defaults(user: dict) -> dict:
     for k, v in defaults.items():
         if k not in user or (user[k] is None and k not in ("premium_until", "premium_plan", "premium_started_at")):
             user[k] = v
+    if "preference_revision" not in user or user["preference_revision"] is None:
+        user["preference_revision"] = rev
     return user
 
 class Database:
     def __init__(self, connect=True):
+        self._lock = threading.Lock()
         self.client = None
         self.db = None
         self.users = None
@@ -149,8 +178,9 @@ class Database:
                 pass
             self.client = None
 
-        if not MONGO_URI:
-            logger.info("MONGO_URI not configured — operating in-memory fallback mode.")
+        if not MONGO_URI or os.getenv("TESTING") == "1":
+            if not MONGO_URI:
+                logger.info("MONGO_URI not configured — operating in-memory fallback mode.")
             self.available = False
             return
 
@@ -379,6 +409,10 @@ class Database:
         _fallback_store["users"][user_id] = user
         return True
 
+    def add_user(self, user_id: int, **kwargs):
+        """Add or update a user record"""
+        return self.update_user(user_id, kwargs)
+
     def ban_user(self, user_id: int, admin_id: int = None) -> bool:
         """Ban user from bot usage."""
         self.update_user(user_id, {"banned": True})
@@ -396,6 +430,322 @@ class Database:
     def is_banned(self, user_id: int) -> bool:
         user = self.get_user(user_id)
         return bool(user.get("banned", False))
+
+    # === Centralized Download Preference Management ===
+    def get_download_preferences(self, user_id: int) -> dict:
+        """
+        Single source of truth for user download preferences (provider, format, codec, quality, profile, revision).
+        """
+        from utils.audio_formats import AudioProfile, AudioFormat, DownloadCompatibilityEngine
+        user = self.get_user(user_id) or {}
+        prov = DownloadCompatibilityEngine.normalize_provider_id(user.get("preferred_provider", "auto"))
+        fmt = user.get("preferred_format", AudioFormat.MP3)
+        raw_q = user.get("preferred_quality", 320)
+        is_prem = self.is_premium(user_id)
+
+        # Ensure format is supported by provider
+        supported_fmts = [f for f, _ in DownloadCompatibilityEngine.get_supported_formats(prov, is_premium=is_prem)]
+        norm_fmt = AudioProfile.normalize_format(fmt)
+        if norm_fmt not in supported_fmts and fmt not in supported_fmts:
+            norm_fmt = DownloadCompatibilityEngine.get_provider_spec(prov).get("default_format", AudioFormat.MP3)
+
+        norm_fmt, norm_q, codec, profile = AudioProfile.validate_and_normalize(norm_fmt, raw_q, is_premium=is_prem)
+        structured_q = AudioProfile.build_structured_quality(norm_fmt, norm_q)
+
+        rev = user.get("preference_revision")
+        if rev is None or not isinstance(rev, int) or rev < 1:
+            if isinstance(user.get("download_preferences"), dict) and user["download_preferences"].get("revision"):
+                try:
+                    rev = int(user["download_preferences"]["revision"])
+                except Exception:
+                    rev = 1
+            else:
+                rev = 1
+            user["preference_revision"] = rev
+
+        pref_obj = {
+            "user_id": user_id,
+            "provider_id": prov,
+            "audio_format": norm_fmt,
+            "audio_codec": codec,
+            "audio_quality": structured_q,
+            "quality_profile": profile,
+            "revision": rev,
+            "updated_at": user.get("updated_at", _get_utc_now())
+        }
+
+        return {
+            "status": PreferenceStatus.SUCCESS,
+            "success": True,
+            "user_id": user_id,
+            "provider_id": prov,
+            "preferred_provider": prov,
+            "audio_format": norm_fmt,
+            "audio_codec": codec,
+            "audio_quality": structured_q,
+            "quality_profile": profile,
+            "revision": rev,
+            "download_preferences": pref_obj,
+            "updated_at": user.get("updated_at", _get_utc_now())
+        }
+
+    def validate_preferences(self, format_type: str, quality, is_premium: bool = True, provider_id: Optional[str] = None):
+        """Validate if provider, format, and quality are compatible and return normalized values."""
+        from utils.audio_formats import AudioProfile, DownloadCompatibilityEngine
+        prov = DownloadCompatibilityEngine.normalize_provider_id(provider_id or "auto")
+        is_valid, _ = DownloadCompatibilityEngine.validate_download_configuration(prov, format_type, quality, is_premium=is_premium)
+        norm_fmt, norm_q, codec, profile = AudioProfile.validate_and_normalize(format_type, quality, is_premium=is_premium)
+        return is_valid, norm_fmt, norm_q, codec, profile
+
+    def get_default_preferences(self, user_id: int = 0) -> dict:
+        """Return safe default preferences for a user."""
+        from utils.audio_formats import AudioProfile, AudioFormat
+        is_prem = self.is_premium(user_id) if user_id else False
+        def_prov = "auto"
+        def_fmt = AudioFormat.MP3
+        def_q = AudioProfile.get_default_quality(def_fmt, is_premium=is_prem)
+        norm_fmt, norm_q, codec, profile = AudioProfile.validate_and_normalize(def_fmt, def_q, is_premium=is_prem)
+        structured_q = AudioProfile.build_structured_quality(norm_fmt, norm_q)
+        now_dt = _get_utc_now()
+        pref_obj = {
+            "user_id": user_id,
+            "provider_id": def_prov,
+            "audio_format": norm_fmt,
+            "audio_codec": codec,
+            "audio_quality": structured_q,
+            "quality_profile": profile,
+            "revision": 1,
+            "updated_at": now_dt
+        }
+        return {
+            "status": PreferenceStatus.SUCCESS,
+            "success": True,
+            "user_id": user_id,
+            "provider_id": def_prov,
+            "preferred_provider": def_prov,
+            "audio_format": norm_fmt,
+            "audio_codec": codec,
+            "audio_quality": structured_q,
+            "quality_profile": profile,
+            "revision": 1,
+            "download_preferences": pref_obj,
+            "updated_at": now_dt
+        }
+
+    def update_download_preferences(self, user_id: int, format_type: Optional[str] = None, quality: Any = None,
+                                    provider_id: Optional[str] = None, expected_revision: Optional[int] = None,
+                                    format: Optional[str] = None) -> dict:
+        """
+        Atomic update for user provider, format, codec, quality, profile with revision-based OCC.
+        If expected_revision is provided, verifies that current stored revision equals expected_revision.
+        Returns preference dict on success or error result with status STALE_REVISION / INVALID_PROVIDER / INVALID_FORMAT / etc.
+        """
+        from utils.audio_formats import AudioProfile, AudioFormat, DownloadCompatibilityEngine
+        is_prem = self.is_premium(user_id)
+        now_dt = _get_utc_now()
+        self._ensure()
+
+        with self._lock:
+            # 1. Fetch current user document and revision
+            user = None
+            if self.available and self.users is not None:
+                try:
+                    user = self.users.find_one({"user_id": user_id})
+                except Exception as e:
+                    logger.warning(f"Mongo find_one error in update_download_preferences: {e}")
+                    self.available = False
+            if user is None:
+                user = _fallback_store["users"].get(user_id) or self._get_user_fallback(user_id)
+
+            current_db_rev = user.get("preference_revision") if user else 1
+            if current_db_rev is None or not isinstance(current_db_rev, int) or current_db_rev < 1:
+                current_db_rev = 1
+
+            # 2. OCC Check: If expected_revision provided, check equality
+            if expected_revision is not None and current_db_rev != expected_revision:
+                return {
+                    "status": PreferenceStatus.STALE_REVISION,
+                    "success": False,
+                    "user_id": user_id,
+                    "revision": current_db_rev,
+                    "current_revision": current_db_rev,
+                    "error": "STALE_REVISION",
+                    "error_message": "These settings have changed since this menu was opened."
+                }
+
+            # 3. Resolve & Validate Provider
+            if provider_id is not None:
+                norm_prov = DownloadCompatibilityEngine.normalize_provider_id(provider_id)
+                if not DownloadCompatibilityEngine.is_provider_usable(norm_prov):
+                    return {
+                        "status": PreferenceStatus.INVALID_PROVIDER,
+                        "success": False,
+                        "user_id": user_id,
+                        "revision": current_db_rev,
+                        "error": "INVALID_PROVIDER",
+                        "error_message": f"Provider '{provider_id}' is not available."
+                    }
+            else:
+                norm_prov = DownloadCompatibilityEngine.normalize_provider_id(user.get("preferred_provider", "auto") if user else "auto")
+
+            prov_spec = DownloadCompatibilityEngine.get_provider_spec(norm_prov)
+            raw_supported = DownloadCompatibilityEngine.get_supported_formats(norm_prov, is_premium=is_prem)
+            supported_fmts = {f for f, _ in raw_supported}
+            norm_supported_fmts = {AudioProfile.normalize_format(f) for f, _ in raw_supported}
+
+            # 4. Resolve & Validate Format
+            fmt_arg = format if format is not None else format_type
+            if fmt_arg is None:
+                current_fmt = user.get("preferred_format", AudioFormat.MP3) if user else AudioFormat.MP3
+                norm_fmt = AudioProfile.normalize_format(current_fmt)
+                if norm_fmt not in norm_supported_fmts and current_fmt not in supported_fmts:
+                    norm_fmt = prov_spec.get("default_format", AudioFormat.MP3)
+            else:
+                norm_fmt = AudioProfile.normalize_format(fmt_arg)
+                if norm_fmt not in norm_supported_fmts and fmt_arg not in supported_fmts:
+                    return {
+                        "status": PreferenceStatus.INVALID_FORMAT,
+                        "success": False,
+                        "user_id": user_id,
+                        "revision": current_db_rev,
+                        "error": "INVALID_FORMAT",
+                        "error_message": f"Unsupported format '{fmt_arg}' for provider '{DownloadCompatibilityEngine.get_display_name(norm_prov)}'."
+                    }
+
+            # 5. Resolve & Validate Quality
+            compat_qualities = DownloadCompatibilityEngine.resolve_quality_profiles(norm_prov, norm_fmt, is_premium=is_prem)
+            if quality is None:
+                current_q = user.get("preferred_quality") if user else None
+                is_compat = False
+                if current_q is not None:
+                    for q_val, label, slug in compat_qualities:
+                        if AudioProfile.are_qualities_equal(q_val, current_q):
+                            is_compat = True
+                            quality = q_val
+                            break
+                if not is_compat:
+                    quality = AudioProfile.get_default_quality(norm_fmt, is_premium=is_prem)
+            else:
+                is_compat = False
+                for q_val, label, slug in compat_qualities:
+                    if AudioProfile.are_qualities_equal(q_val, quality) or slug == str(quality).lower():
+                        is_compat = True
+                        quality = q_val
+                        break
+                if not is_compat:
+                    return {
+                        "status": PreferenceStatus.INVALID_QUALITY,
+                        "success": False,
+                        "user_id": user_id,
+                        "revision": current_db_rev,
+                        "error": "INVALID_QUALITY",
+                        "error_message": f"Quality '{quality}' is not compatible with provider '{DownloadCompatibilityEngine.get_display_name(norm_prov)}' and format '{norm_fmt}'."
+                    }
+
+            norm_fmt, norm_q, codec, profile = AudioProfile.validate_and_normalize(norm_fmt, quality, is_premium=is_prem)
+            structured_q = AudioProfile.build_structured_quality(norm_fmt, norm_q)
+            new_rev = current_db_rev + 1
+
+            pref_subdoc = {
+                "user_id": user_id,
+                "provider_id": norm_prov,
+                "audio_format": norm_fmt,
+                "audio_codec": codec,
+                "audio_quality": structured_q,
+                "quality_profile": profile,
+                "revision": new_rev,
+                "updated_at": now_dt
+            }
+
+            # 6. Apply atomic update to MongoDB or fallback store
+            if self.available and self.users is not None:
+                try:
+                    filter_q = {"user_id": user_id}
+                    if expected_revision is not None:
+                        if expected_revision == 1:
+                            filter_q["$or"] = [
+                                {"preference_revision": 1},
+                                {"preference_revision": {"$exists": False}}
+                            ]
+                        else:
+                            filter_q["preference_revision"] = expected_revision
+
+                    update_q = {
+                        "$set": {
+                            "preferred_provider": norm_prov,
+                            "preferred_format": norm_fmt,
+                            "preferred_codec": codec,
+                            "preferred_quality": norm_q,
+                            "quality_profile": profile,
+                            "preference_revision": new_rev,
+                            "download_preferences": pref_subdoc,
+                            "updated_at": now_dt,
+                            "last_seen": now_dt
+                        }
+                    }
+                    res = self.users.update_one(filter_q, update_q)
+                    if res.matched_count == 0:
+                        fresh_doc = self.users.find_one({"user_id": user_id}) or {}
+                        fresh_rev = fresh_doc.get("preference_revision", 1)
+                        return {
+                            "status": PreferenceStatus.STALE_REVISION,
+                            "success": False,
+                            "user_id": user_id,
+                            "revision": fresh_rev,
+                            "error": "STALE_REVISION",
+                            "error_message": "These settings have changed since this menu was opened."
+                        }
+                except errors.PyMongoError as e:
+                    logger.warning(f"Mongo error in update_download_preferences: {e}")
+                    self.available = False
+
+            # In-memory fallback store update
+            u_mem = _fallback_store["users"].get(user_id) or self._get_user_fallback(user_id)
+            u_mem["preference_revision"] = new_rev
+            u_mem["preferred_provider"] = norm_prov
+            u_mem["preferred_format"] = norm_fmt
+            u_mem["preferred_codec"] = codec
+            u_mem["preferred_quality"] = norm_q
+            u_mem["quality_profile"] = profile
+            u_mem["download_preferences"] = pref_subdoc
+            u_mem["updated_at"] = now_dt
+            u_mem["last_seen"] = now_dt
+            _fallback_store["users"][user_id] = u_mem
+
+            return {
+                "status": PreferenceStatus.SUCCESS,
+                "success": True,
+                "user_id": user_id,
+                "provider_id": norm_prov,
+                "preferred_provider": norm_prov,
+                "audio_format": norm_fmt,
+                "audio_codec": codec,
+                "audio_quality": structured_q,
+                "quality_profile": profile,
+                "revision": new_rev,
+                "download_preferences": pref_subdoc,
+                "preferences": pref_subdoc,
+                "updated_at": now_dt
+            }
+
+    def update_provider(self, user_id: int, provider_id: str, expected_revision: Optional[int] = None) -> dict:
+        """Atomic update for provider with automatic format and quality compatibility re-validation."""
+        return self.update_download_preferences(user_id, provider_id=provider_id, expected_revision=expected_revision)
+
+    def update_format(self, user_id: int, format: Optional[str] = None, expected_revision: Optional[int] = None,
+                      format_type: Optional[str] = None, provider_id: Optional[str] = None) -> dict:
+        """Atomic update for format with automatic quality compatibility resolution and revision check."""
+        fmt = format if format is not None else format_type
+        return self.update_download_preferences(user_id, format=fmt, quality=None, provider_id=provider_id, expected_revision=expected_revision)
+
+    def update_quality(self, user_id: int, quality: Any, expected_revision: Optional[int] = None,
+                       format_type: Optional[str] = None, provider_id: Optional[str] = None) -> dict:
+        """Atomic update for quality under the current format/provider with revision check."""
+        user = self.get_user(user_id) or {}
+        fmt = format_type if format_type is not None else user.get("preferred_format", "mp3")
+        prov = provider_id if provider_id is not None else user.get("preferred_provider", "auto")
+        return self.update_download_preferences(user_id, format=fmt, quality=quality, provider_id=prov, expected_revision=expected_revision)
+
 
     # === Bot Settings Management ===
     def get_bot_setting(self, key: str, default=None):

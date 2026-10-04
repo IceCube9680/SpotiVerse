@@ -13,18 +13,32 @@ class DownloadQueueManager:
     - Bounded fairness ensures free user requests are not starved.
     """
     def __init__(self):
-        total_max = getattr(Config, "MAX_CONCURRENT_DOWNLOADS", 3) or 3
-        prem_max = getattr(Config, "MAX_PREMIUM_CONCURRENT_DOWNLOADS", 5) or 5
-        free_max = getattr(Config, "MAX_FREE_CONCURRENT_DOWNLOADS", 2) or 2
-
-        self._total_semaphore = asyncio.Semaphore(total_max)
-        self._prem_semaphore = asyncio.Semaphore(prem_max)
-        self._free_semaphore = asyncio.Semaphore(free_max)
+        self._total_semaphore = None
+        self._prem_semaphore = None
+        self._free_semaphore = None
+        self._lock = None
+        self._loop = None
 
         self._active_downloads = 0
         self._queued_premium = 0
         self._queued_free = 0
-        self._lock = asyncio.Lock()
+
+    def _ensure_primitives(self):
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        if self._total_semaphore is None or self._loop != current_loop:
+            self._loop = current_loop
+            total_max = getattr(Config, "MAX_CONCURRENT_DOWNLOADS", 3) or 3
+            prem_max = getattr(Config, "MAX_PREMIUM_CONCURRENT_DOWNLOADS", 5) or 5
+            free_max = getattr(Config, "MAX_FREE_CONCURRENT_DOWNLOADS", 2) or 2
+
+            self._total_semaphore = asyncio.Semaphore(total_max)
+            self._prem_semaphore = asyncio.Semaphore(prem_max)
+            self._free_semaphore = asyncio.Semaphore(free_max)
+            self._lock = asyncio.Lock()
 
     @property
     def queue_status(self) -> dict:
@@ -37,6 +51,7 @@ class DownloadQueueManager:
 
     async def acquire(self, is_premium: bool = False, is_priority: bool = False):
         """Acquire download slot respecting priority and tier limits"""
+        self._ensure_primitives()
         async with self._lock:
             if is_priority or is_premium:
                 self._queued_premium += 1
@@ -58,6 +73,7 @@ class DownloadQueueManager:
 
     def release(self, is_premium: bool = False, is_priority: bool = False):
         """Release slot back to queue"""
+        self._ensure_primitives()
         self._total_semaphore.release()
         tier_sem = self._prem_semaphore if (is_priority or is_premium) else self._free_semaphore
         tier_sem.release()

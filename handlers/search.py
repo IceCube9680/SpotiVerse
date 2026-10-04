@@ -110,7 +110,7 @@ class SearchHandler:
     async def search_spotify(self, query, limit=10):
         """Search Spotify for tracks with fallback handling"""
         sp_client = self.get_spotify_client()
-        if sp_client and not self._use_anonymous_token:
+        if sp_client:
             try:
                 try:
                     loop = asyncio.get_running_loop()
@@ -153,6 +153,9 @@ class SearchHandler:
                 if "429" in serr or "rate" in serr.lower() or "too many" in serr.lower():
                     logger.warning("Spotify API rate limit encountered. Cooldown for 5 minutes.")
                     self._spotify_rate_limited_until = time.time() + 300
+                elif "403" in serr or "premium" in serr.lower():
+                    logger.warning(f"Spotify credentials require premium ({e}). Falling back to multi-provider search.")
+                    self._use_anonymous_token = True
                 else:
                     logger.error(f"Spotify search error: {e}")
 
@@ -310,7 +313,10 @@ class SearchHandler:
             return None
 
     async def search_all(self, query, provider=DEFAULT_SEARCH_PROVIDER, limit=10):
-        """Search across all available providers with in-memory caching and resilient fallback"""
+        """Search across available providers with in-memory caching and resilient fallback"""
+        if not query or not query.strip():
+            return None
+
         cache_key = f"{provider}:{limit}:{query.lower().strip()}"
         now = time.time()
         if cache_key in self._search_cache:
@@ -319,26 +325,75 @@ class SearchHandler:
                 return cached_res
 
         results = None
-        # Only query primary provider if enabled
-        if ProviderRegistry.is_enabled(provider):
-            if provider == "spotify":
-                results = await self.search_spotify(query, limit)
-            elif provider == "youtube":
-                results = await self.search_youtube(query, limit)
-            elif provider in ("saavn", "jiosaavn"):
-                results = await self.search_saavn(query, limit)
+        canonical_prov = ProviderRegistry.get_canonical_id(provider)
 
-        # If primary provider yielded no results or was disabled, try other enabled providers
+        # 1. Try primary provider if enabled
+        if ProviderRegistry.is_enabled(canonical_prov):
+            if canonical_prov == "spotify":
+                results = await self.search_spotify(query, limit)
+            elif canonical_prov in ("youtube", "ytmusic"):
+                results = await self.search_youtube(query, limit)
+            elif canonical_prov in ("saavn", "jiosaavn"):
+                results = await self.search_saavn(query, limit)
+            else:
+                prov_inst = ProviderRegistry.get_instance(canonical_prov)
+                if prov_inst:
+                    try:
+                        raw_tracks = await prov_inst.search(query, limit=limit)
+                        if raw_tracks:
+                            results = [
+                                {
+                                    'id': t.provider_track_id or t.webpage_url,
+                                    'title': t.title,
+                                    'artist': t.artist,
+                                    'album': t.album or 'Unknown Album',
+                                    'year': str(t.release_date)[:4] if t.release_date else 'Unknown',
+                                    'duration': t.duration or 0,
+                                    'thumbnail': t.artwork,
+                                    'provider': canonical_prov,
+                                    'webpage_url': t.webpage_url
+                                }
+                                for t in raw_tracks
+                            ]
+                    except Exception as e:
+                        logger.warning(f"Provider {canonical_prov} search failed: {e}")
+
+        # 2. Resilient fallback across enabled providers if primary returned nothing
         if not results:
-            for prov in ["spotify", "jiosaavn", "youtube"]:
-                if prov == provider or not ProviderRegistry.is_enabled(prov):
+            fallback_order = ["spotify", "jiosaavn", "youtube", "soundcloud", "deezer", "bandcamp", "archive", "applemusic", "tidal", "qobuz"]
+            for prov in fallback_order:
+                c_prov = ProviderRegistry.get_canonical_id(prov)
+                if c_prov == canonical_prov or not ProviderRegistry.is_enabled(c_prov):
                     continue
-                if prov == "spotify":
+
+                if c_prov == "spotify":
                     results = await self.search_spotify(query, limit)
-                elif prov in ("saavn", "jiosaavn"):
+                elif c_prov in ("saavn", "jiosaavn"):
                     results = await self.search_saavn(query, limit)
-                elif prov == "youtube":
+                elif c_prov == "youtube":
                     results = await self.search_youtube(query, limit)
+                else:
+                    prov_inst = ProviderRegistry.get_instance(c_prov)
+                    if prov_inst:
+                        try:
+                            raw_tracks = await prov_inst.search(query, limit=limit)
+                            if raw_tracks:
+                                results = [
+                                    {
+                                        'id': t.provider_track_id or t.webpage_url,
+                                        'title': t.title,
+                                        'artist': t.artist,
+                                        'album': t.album or 'Unknown Album',
+                                        'year': str(t.release_date)[:4] if t.release_date else 'Unknown',
+                                        'duration': t.duration or 0,
+                                        'thumbnail': t.artwork,
+                                        'provider': c_prov,
+                                        'webpage_url': t.webpage_url
+                                    }
+                                    for t in raw_tracks
+                                ]
+                        except Exception as e:
+                            logger.warning(f"Fallback provider {c_prov} search failed: {e}")
 
                 if results:
                     break
